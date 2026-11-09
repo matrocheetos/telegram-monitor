@@ -9,7 +9,7 @@ import (
 var (
 	urlRegex               = regexp.MustCompile(`https?://[^\s<>"'\)]+`)
 	colonPatternRegex      = regexp.MustCompile(`(?i)(?:🎟️?|🏷️?|cupom|c[oó]digo)?\s*:\s*([A-Za-z0-9_-]{3,30})`)
-	keywordPatternRegex    = regexp.MustCompile(`(?i)(?:cupom|c[oó]digo)\s+(?:[eé]\s+)?([A-Za-z0-9_-]{3,30})`)
+	keywordPatternRegex    = regexp.MustCompile(`(?i)(?:cupom|c[oó]digo)\s+(?:[eé]\s+)?([A-Za-z0-9_-]{3,30})(?:[ \t\r\n]|$)`)
 	timestampCheckRegex    = regexp.MustCompile(`^[0-9]{2}$`)
 	couponStopWords        = map[string]struct{}{
 		"HTTP": {}, "HTTPS": {}, "COM": {}, "BR": {}, "LINK": {}, "LOJA": {},
@@ -17,6 +17,8 @@ var (
 		"FRETE": {}, "GRATIS": {}, "PARCELADO": {}, "AVISTA": {}, "DESCONTO": {},
 		"DE": {}, "DO": {}, "DA": {}, "NO": {}, "NA": {}, "EM": {}, "POR": {},
 		"PARA": {}, "VALIDO": {}, "EXCLUSIVO": {}, "ATIVO": {}, "APLICADO": {}, "REAIS": {},
+		"KABUM": {}, "AMAZON": {}, "SHOPEE": {}, "MAGALU": {}, "ALIEXPRESS": {},
+		"PICHAU": {}, "TERABYTE": {}, "MERCADOLIVRE": {}, "MELI": {}, "SITE": {}, "APP": {},
 	}
 )
 
@@ -100,6 +102,14 @@ func HasCouponIndicator(text string) bool {
 		}
 	}
 	return false
+}
+
+func ExtractFirstURL(text string) string {
+	match := urlRegex.FindString(text)
+	if match == "" {
+		return ""
+	}
+	return strings.Trim(match, ".,;:!?")
 }
 
 func identifyStore(text string, foundURLs []string) (string, string) {

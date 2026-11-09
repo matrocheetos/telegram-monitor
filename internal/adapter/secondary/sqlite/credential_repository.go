@@ -35,6 +35,16 @@ func (r *CredentialRepository) SaveTelegramCredentials(ctx context.Context, cred
 	creds.ID = 1
 	creds.UpdatedAt = time.Now().UTC()
 
+	if creds.EncryptedAPIID == nil {
+		creds.EncryptedAPIID = []byte{}
+	}
+	if creds.EncryptedAPIHash == nil {
+		creds.EncryptedAPIHash = []byte{}
+	}
+	if creds.EncryptedSession == nil {
+		creds.EncryptedSession = []byte{}
+	}
+
 	_, err := r.db.ExecContext(ctx, query,
 		creds.EncryptedAPIID,
 		creds.EncryptedAPIHash,

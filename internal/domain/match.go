@@ -67,7 +67,7 @@ func BuildTokenSet(tokens []string) map[string]struct{} {
 	return set
 }
 
-func isLevenshteinLE1(s1, s2 string) bool {
+func IsLevenshteinLE1(s1, s2 string) bool {
 	l1 := len(s1)
 	l2 := len(s2)
 	diff := l1 - l2
@@ -184,7 +184,7 @@ func MatchProduct(interest *UserInterest, messageText string) (*ProductMatch, bo
 			matched = true
 		} else if len(pos) >= 5 {
 			for tok := range tokenSet {
-				if isLevenshteinLE1(pos, tok) {
+				if IsLevenshteinLE1(pos, tok) {
 					matched = true
 					break
 				}

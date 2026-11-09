@@ -46,3 +46,7 @@ type InterestUseCase interface {
 type MessageProcessor interface {
 	ProcessIncomingMessage(ctx context.Context, channelID int64, messageText string) error
 }
+
+type SnapshotRebuilder interface {
+	RebuildSnapshot(ctx context.Context) error
+}
