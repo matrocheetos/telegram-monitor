@@ -1,6 +1,12 @@
+version: "2"
 run:
+  concurrency: 4
   timeout: 5m
   tests: true
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 50
 
 linters:
   enable:
@@ -26,13 +32,15 @@ linters:
     - sloglint
     - nolintlint
 
-linters-settings:
-  errcheck:
-    check-type-assertions: true
-  nolintlint:
-    require-explanation: true
-    require-specific: true
-
-issues:
-  max-issues-per-linter: 0
-  max-same-issues: 50
+  settings:
+    errcheck:
+      check-type-assertions: true
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+    revive:
+      rules:
+        - name: exported
+          disabled: true
+        - name: package-comments
+          disabled: true
