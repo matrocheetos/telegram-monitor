@@ -920,3 +920,51 @@ func TestAdminOperations(t *testing.T) {
 		t.Fatalf("expected 204 when deleting other user, got %d", delUserRec.Code)
 	}
 }
+
+func TestDashboard_NtfyTopicPrefix(t *testing.T) {
+	ctx := context.Background()
+	fix := setupFixture(t, false, true)
+
+	server, err := adapterHTTP.NewServer(
+		adapterHTTP.Config{
+			Port:               8080,
+			NtfyURL:            "https://ntfy.sh",
+			NtfyTopicSeparator: "-",
+			NtfyTopicPrefix:    "test-",
+			CORSAllowedOrigins: "http://localhost:5173",
+		},
+		fix.setupUC,
+		fix.authUC,
+		fix.userAdminUC,
+		fix.tgAuthUC,
+		fix.channelUC,
+		fix.interestUC,
+		fix.offerUC,
+	)
+	if err != nil {
+		t.Fatalf("failed to create server: %v", err)
+	}
+
+	userCookie := newSessionCookie(fix.regularToken)
+	req := newJSONRequest(ctx, http.MethodGet, "/api/v1/dashboard", nil, userCookie, "")
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	var resp adapterHTTP.DashboardResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal dashboard: %v", err)
+	}
+
+	if resp.UserNormalizedTopic != "test-promo-user-mateus" {
+		t.Errorf("expected test-promo-user-mateus, got %s", resp.UserNormalizedTopic)
+	}
+	if resp.CouponsTopic != "test-promo/cupom" {
+		t.Errorf("expected test-promo/cupom, got %s", resp.CouponsTopic)
+	}
+	if !strings.Contains(resp.UserPublicURL, "test-promo-user-mateus") {
+		t.Errorf("expected test-promo-user-mateus in url, got %s", resp.UserPublicURL)
+	}
+}

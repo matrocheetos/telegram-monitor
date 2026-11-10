@@ -11,6 +11,7 @@ services:
     volumes:
       - ./data:/app/data
     environment:
+      - APP_ENV=${APP_ENV:-development}
       - APP_SECRET_KEY=${APP_SECRET_KEY:-default-development-secret-key-32-bytes}
       - DB_PATH=/app/data/telegram-monitor.db
       - HTTP_PORT=8080
@@ -18,8 +19,6 @@ services:
       - APPRISE_KEY=${APPRISE_KEY:-}
       - NTFY_URL=${NTFY_URL:-https://ntfy.sh}
       - NTFY_TOPIC_SEPARATOR=-
-      - GOMEMLIMIT=28MiB
-    deploy:
-      resources:
-        limits:
-          memory: 32M
+      - NTFY_TOPIC_PREFIX=${NTFY_TOPIC_PREFIX:-test-}
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-http://localhost:5173,http://localhost:8787,https://promos.matrochares.qzz.io}
+      - GOMEMLIMIT=128MiB

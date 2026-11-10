@@ -12,6 +12,7 @@ type Config struct {
 	Port               int
 	NtfyURL            string
 	NtfyTopicSeparator string
+	NtfyTopicPrefix    string
 	CORSAllowedOrigins string
 }
 
@@ -19,6 +20,7 @@ type Server struct {
 	port                int
 	ntfyURL             string
 	ntfyTopicSeparator  string
+	ntfyTopicPrefix     string
 	setupUseCase        port.SetupUseCase
 	authUseCase         port.AuthUseCase
 	userAdminUseCase    port.UserAdminUseCase
@@ -53,6 +55,7 @@ func NewServer(
 		port:                portNum,
 		ntfyURL:             cfg.NtfyURL,
 		ntfyTopicSeparator:  sep,
+		ntfyTopicPrefix:     cfg.NtfyTopicPrefix,
 		setupUseCase:        setupUseCase,
 		authUseCase:         authUseCase,
 		userAdminUseCase:    userAdminUseCase,

@@ -249,4 +249,40 @@ func TestClient_ErrorHandling(t *testing.T) {
 			t.Errorf("expected error with cancelled context, got nil")
 		}
 	})
+
+	t.Run("Prefix_Applied_In_Notifications", func(t *testing.T) {
+		var receivedURLs string
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var payload struct {
+				URLs string `json:"urls"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&payload)
+			receivedURLs = payload.URLs
+			w.WriteHeader(http.StatusOK)
+		}))
+		t.Cleanup(ts.Close)
+
+		prefixClient := apprise.NewClient(apprise.Config{
+			AppriseURL:         ts.URL,
+			NtfyURL:            "https://ntfy.example.com",
+			NtfyTopicSeparator: "-",
+			NtfyTopicPrefix:    "test-",
+		})
+
+		err := prefixClient.SendProductNotification(context.Background(), "mateus", "https://deal", nil, "test")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !strings.Contains(receivedURLs, "test-promo-user-mateus") {
+			t.Errorf("expected test-promo-user-mateus in %s", receivedURLs)
+		}
+
+		err = prefixClient.SendCouponNotification(context.Background(), domain.Coupon{Code: "CUPOM", StoreName: "Loja"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !strings.Contains(receivedURLs, "test-promo-cupom") {
+			t.Errorf("expected test-promo-cupom in %s", receivedURLs)
+		}
+	})
 }

@@ -178,7 +178,7 @@ func (s *Server) handleAdminChannelsGet(w http.ResponseWriter, r *http.Request) 
 	user := GetUser(r.Context())
 	adminTopic := ""
 	if user != nil {
-		adminTopic = user.NtfyTopic
+		adminTopic = s.ntfyTopicPrefix + user.NtfyTopic
 	}
 
 	writeJSON(w, http.StatusOK, AdminChannelsResponse{
@@ -188,7 +188,7 @@ func (s *Server) handleAdminChannelsGet(w http.ResponseWriter, r *http.Request) 
 		CouponsChannelsCount:  couponsCount,
 		ProductsChannelsCount: productsCount,
 		AdminProductTopic:     adminTopic,
-		CouponsTopic:          "promo/cupom",
+		CouponsTopic:          s.ntfyTopicPrefix + "promo/cupom",
 		Channels:              items,
 	})
 }
@@ -295,12 +295,13 @@ func (s *Server) handleAdminUsersGet(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
+		topic := s.ntfyTopicPrefix + u.NtfyTopic
 		items = append(items, AdminUserItem{
 			ID:                   u.ID,
 			Username:             u.Username,
 			Role:                 u.Role,
-			NtfyTopic:            u.NtfyTopic,
-			NormalizedNtfyTopic:  normalizeTopic(u.NtfyTopic, s.ntfyTopicSeparator),
+			NtfyTopic:            topic,
+			NormalizedNtfyTopic:  normalizeTopic(topic, s.ntfyTopicSeparator),
 			ActiveInterestsCount: activeCount,
 			CreatedAt:            u.CreatedAt,
 		})
@@ -341,12 +342,13 @@ func (s *Server) handleAdminUsersCreatePost(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	topic := s.ntfyTopicPrefix + user.NtfyTopic
 	writeJSON(w, http.StatusCreated, AdminUserItem{
 		ID:                  user.ID,
 		Username:            user.Username,
 		Role:                user.Role,
-		NtfyTopic:           user.NtfyTopic,
-		NormalizedNtfyTopic: normalizeTopic(user.NtfyTopic, s.ntfyTopicSeparator),
+		NtfyTopic:           topic,
+		NormalizedNtfyTopic: normalizeTopic(topic, s.ntfyTopicSeparator),
 		CreatedAt:           user.CreatedAt,
 	})
 }

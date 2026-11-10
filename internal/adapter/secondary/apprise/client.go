@@ -26,6 +26,7 @@ type Config struct {
 	AppriseKey         string
 	NtfyURL            string
 	NtfyTopicSeparator string
+	NtfyTopicPrefix    string
 	HTTPClient         *http.Client
 }
 
@@ -36,6 +37,7 @@ type Client struct {
 	ntfyScheme         string
 	ntfyHost           string
 	ntfyTopicSeparator string
+	ntfyTopicPrefix    string
 	httpClient         *http.Client
 }
 
@@ -80,6 +82,7 @@ func NewClient(cfg Config) *Client {
 		ntfyScheme:         scheme,
 		ntfyHost:           host,
 		ntfyTopicSeparator: sep,
+		ntfyTopicPrefix:    cfg.NtfyTopicPrefix,
 		httpClient:         httpClient,
 	}
 }
@@ -135,7 +138,7 @@ type notifyPayload struct {
 }
 
 func (c *Client) SendProductNotification(ctx context.Context, username, offerURL string, price *float64, text string) error {
-	logicalTopic := "promo/user/" + username
+	logicalTopic := c.ntfyTopicPrefix + "promo/user/" + username
 	appriseTarget := c.BuildAppriseURL(logicalTopic, offerURL, "")
 
 	title := "🎯 Oferta Encontrada!"
@@ -149,7 +152,7 @@ func (c *Client) SendProductNotification(ctx context.Context, username, offerURL
 }
 
 func (c *Client) SendCouponNotification(ctx context.Context, coupon domain.Coupon) error {
-	logicalTopic := "promo/cupom"
+	logicalTopic := c.ntfyTopicPrefix + "promo/cupom"
 	appriseTarget := c.BuildAppriseURL(logicalTopic, coupon.StoreURL, coupon.Code)
 
 	title := fmt.Sprintf("🎟️ Cupom: %s (%s)", coupon.Code, coupon.StoreName)

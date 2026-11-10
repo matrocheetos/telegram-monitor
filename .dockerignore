@@ -1,0 +1,9 @@
+.git
+.github
+.agents
+*.exe
+*.db
+*.db-shm
+*.db-wal
+data/
+tmp/

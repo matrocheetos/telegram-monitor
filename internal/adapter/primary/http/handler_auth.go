@@ -48,7 +48,7 @@ func (s *Server) handleSessionGet(w http.ResponseWriter, r *http.Request) {
 			ID:        user.ID,
 			Username:  user.Username,
 			Role:      user.Role,
-			NtfyTopic: user.NtfyTopic,
+			NtfyTopic: s.ntfyTopicPrefix + user.NtfyTopic,
 		}
 
 		if user.Role == domain.RoleAdmin {
@@ -127,7 +127,7 @@ func (s *Server) handleSetupPost(w http.ResponseWriter, r *http.Request) {
 			ID:        user.ID,
 			Username:  user.Username,
 			Role:      user.Role,
-			NtfyTopic: user.NtfyTopic,
+			NtfyTopic: s.ntfyTopicPrefix + user.NtfyTopic,
 		},
 		Telegram: &TelegramSessionPayload{
 			Connected:   false,
@@ -192,7 +192,7 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 			ID:        user.ID,
 			Username:  user.Username,
 			Role:      user.Role,
-			NtfyTopic: user.NtfyTopic,
+			NtfyTopic: s.ntfyTopicPrefix + user.NtfyTopic,
 		},
 		Telegram: tgPayload,
 	})

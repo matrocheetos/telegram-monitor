@@ -54,13 +54,16 @@ func (s *Server) handleDashboardGet(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	userTopic := s.ntfyTopicPrefix + user.NtfyTopic
+	couponsTopic := s.ntfyTopicPrefix + "promo/cupom"
+
 	resp := DashboardResponse{
 		ActiveChannelsCount: activeCount,
-		UserTopic:           user.NtfyTopic,
-		UserNormalizedTopic: normalizeTopic(user.NtfyTopic, s.ntfyTopicSeparator),
-		UserPublicURL:       buildPublicURL(s.ntfyURL, user.NtfyTopic, s.ntfyTopicSeparator),
-		CouponsTopic:        "promo/cupom",
-		CouponsPublicURL:    buildPublicURL(s.ntfyURL, "promo/cupom", s.ntfyTopicSeparator),
+		UserTopic:           userTopic,
+		UserNormalizedTopic: normalizeTopic(userTopic, s.ntfyTopicSeparator),
+		UserPublicURL:       buildPublicURL(s.ntfyURL, userTopic, s.ntfyTopicSeparator),
+		CouponsTopic:        couponsTopic,
+		CouponsPublicURL:    buildPublicURL(s.ntfyURL, couponsTopic, s.ntfyTopicSeparator),
 		Interests:           items,
 	}
 

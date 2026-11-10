@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -118,12 +119,18 @@ func run() error {
 	if ntfyTopicSep == "" {
 		ntfyTopicSep = "-"
 	}
+	ntfyTopicPrefix := os.Getenv("NTFY_TOPIC_PREFIX")
+	appEnv := strings.ToLower(os.Getenv("APP_ENV"))
+	if ntfyTopicPrefix == "" && (appEnv == "development" || appEnv == "local" || appEnv == "dev" || appEnv == "test") {
+		ntfyTopicPrefix = "test-"
+	}
 
 	appriseClient := apprise.NewClient(apprise.Config{
 		AppriseURL:         appriseURL,
 		AppriseKey:         os.Getenv("APPRISE_KEY"),
 		NtfyURL:            ntfyURL,
 		NtfyTopicSeparator: ntfyTopicSep,
+		NtfyTopicPrefix:    ntfyTopicPrefix,
 	})
 
 	monitorSvc := service.NewMonitorService(
@@ -185,6 +192,7 @@ func run() error {
 			Port:               port,
 			NtfyURL:            ntfyURL,
 			NtfyTopicSeparator: ntfyTopicSep,
+			NtfyTopicPrefix:    ntfyTopicPrefix,
 			CORSAllowedOrigins: os.Getenv("CORS_ALLOWED_ORIGINS"),
 		},
 		authSvc,
