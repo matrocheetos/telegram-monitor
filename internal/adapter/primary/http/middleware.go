@@ -129,7 +129,7 @@ func FirstBoot(setupUseCase port.SetupUseCase) func(http.Handler) http.Handler {
 			}
 
 			if needsSetup {
-				if path == "/api/v1/health" || path == "/api/v1/auth/session" || path == "/api/v1/setup" {
+				if path == "/api/v1/health" || path == "/api/v1/auth/session" || path == "/api/v1/setup" || strings.HasPrefix(path, "/swagger") {
 					next.ServeHTTP(w, r)
 					return
 				}
@@ -154,7 +154,7 @@ func RBAC(next http.Handler) http.Handler {
 			path = "/"
 		}
 
-		if path == "/api/v1/health" || path == "/api/v1/auth/session" || path == "/api/v1/setup" || path == "/api/v1/auth/login" {
+		if path == "/api/v1/health" || path == "/api/v1/auth/session" || path == "/api/v1/setup" || path == "/api/v1/auth/login" || strings.HasPrefix(path, "/swagger") {
 			next.ServeHTTP(w, r)
 			return
 		}

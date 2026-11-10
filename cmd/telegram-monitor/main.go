@@ -22,6 +22,23 @@ import (
 	"github.com/matrocheetos/telegram-monitor/internal/service"
 )
 
+// @title           Telegram Monitor REST API
+// @version         1.0
+// @description     Headless JSON REST API for Telegram Monitor, providing MTProto userbot connection, multi-rule channel product and coupon monitoring, and user management.
+// @host            localhost:8080
+// @BasePath        /api/v1
+// @schemes         http https
+
+// @securityDefinitions.apikey CookieAuth
+// @in cookie
+// @name session_id
+// @description Session authentication cookie.
+
+// @securityDefinitions.apikey CSRFToken
+// @in header
+// @name X-CSRF-Token
+// @description Double-submit CSRF token header for mutating requests.
+
 func main() {
 	if err := run(); err != nil {
 		slog.Error("daemon terminated with error", "error", err)

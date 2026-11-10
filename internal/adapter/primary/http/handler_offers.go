@@ -28,6 +28,20 @@ func formatPrice(price *float64) string {
 	return fmt.Sprintf("R$ %.2f", *price)
 }
 
+// handleOffersGet godoc
+// @Summary      List matched offers and extracted coupons
+// @Description  Queries matched products for user terms and global extracted coupons with search and pagination
+// @Tags         Offers
+// @Produce      json
+// @Param        tab     query     string  false  "Tab filter (products or coupons)"
+// @Param        q       query     string  false  "Search keyword"
+// @Param        limit   query     int     false  "Items per page limit (max 100)"  default(50)
+// @Param        offset  query     int     false  "Items offset"                    default(0)
+// @Success      200     {object}  OffersResponse
+// @Failure      401     {object}  ErrorEnvelope
+// @Failure      500     {object}  ErrorEnvelope
+// @Security     CookieAuth
+// @Router       /offers [get]
 func (s *Server) handleOffersGet(w http.ResponseWriter, r *http.Request) {
 	user := GetUser(r.Context())
 	if user == nil {

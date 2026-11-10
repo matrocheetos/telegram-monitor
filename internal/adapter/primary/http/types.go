@@ -294,3 +294,19 @@ type CreateUserRequest struct {
 type ResetPasswordRequest struct {
 	Password string `json:"password"`
 }
+
+type HealthResponse struct {
+	Status string `json:"status" example:"ok"`
+}
+
+type StatusResponse struct {
+	Status string `json:"status" example:"disconnected"`
+}
+
+type UpdatedResponse struct {
+	Updated bool `json:"updated" example:"true"`
+}
+
+type AdminChannelsListResponse struct {
+	Channels []ChannelItem `json:"channels"`
+}

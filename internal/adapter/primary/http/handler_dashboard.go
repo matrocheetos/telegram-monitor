@@ -5,6 +5,16 @@ import (
 	"strconv"
 )
 
+// handleDashboardGet godoc
+// @Summary      Get dashboard summary
+// @Description  Returns user ntfy topics, active channels count, and list of monitored search terms
+// @Tags         Dashboard
+// @Produce      json
+// @Success      200  {object}  DashboardResponse
+// @Failure      401  {object}  ErrorEnvelope
+// @Failure      500  {object}  ErrorEnvelope
+// @Security     CookieAuth
+// @Router       /dashboard [get]
 func (s *Server) handleDashboardGet(w http.ResponseWriter, r *http.Request) {
 	user := GetUser(r.Context())
 	if user == nil {
@@ -57,6 +67,16 @@ func (s *Server) handleDashboardGet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// handleInterestsGet godoc
+// @Summary      List monitored interests
+// @Description  Returns all product search terms configured by the authenticated user
+// @Tags         Interests
+// @Produce      json
+// @Success      200  {array}   InterestItem
+// @Failure      401  {object}  ErrorEnvelope
+// @Failure      500  {object}  ErrorEnvelope
+// @Security     CookieAuth
+// @Router       /interests [get]
 func (s *Server) handleInterestsGet(w http.ResponseWriter, r *http.Request) {
 	user := GetUser(r.Context())
 	if user == nil {
@@ -86,6 +106,19 @@ func (s *Server) handleInterestsGet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, items)
 }
 
+// handleInterestsPost godoc
+// @Summary      Add monitored interest
+// @Description  Creates a new monitored product search term with negative keyword filtering and optional max price
+// @Tags         Interests
+// @Accept       json
+// @Produce      json
+// @Param        request  body      CreateInterestRequest  true  "Interest term and optional max price"
+// @Success      201      {object}  InterestItem
+// @Failure      400      {object}  ErrorEnvelope
+// @Failure      401      {object}  ErrorEnvelope
+// @Security     CookieAuth
+// @Security     CSRFToken
+// @Router       /interests [post]
 func (s *Server) handleInterestsPost(w http.ResponseWriter, r *http.Request) {
 	user := GetUser(r.Context())
 	if user == nil {
@@ -116,6 +149,17 @@ func (s *Server) handleInterestsPost(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleInterestDelete godoc
+// @Summary      Delete monitored interest
+// @Description  Deletes a monitored search term by ID
+// @Tags         Interests
+// @Param        id   path  int  true  "Interest ID"
+// @Success      204  "No Content"
+// @Failure      400  {object}  ErrorEnvelope
+// @Failure      401  {object}  ErrorEnvelope
+// @Security     CookieAuth
+// @Security     CSRFToken
+// @Router       /interests/{id} [delete]
 func (s *Server) handleInterestDelete(w http.ResponseWriter, r *http.Request) {
 	user := GetUser(r.Context())
 	if user == nil {

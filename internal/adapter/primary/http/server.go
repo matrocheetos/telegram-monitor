@@ -3,7 +3,9 @@ package http
 import (
 	"net/http"
 
+	_ "github.com/matrocheetos/telegram-monitor/docs"
 	"github.com/matrocheetos/telegram-monitor/internal/port"
+	httpSwagger "github.com/swaggo/http-swagger"
 )
 
 type Config struct {
@@ -64,6 +66,12 @@ func NewServer(
 
 	// Health
 	mux.HandleFunc("GET /api/v1/health", s.handleHealthGet)
+
+	// Swagger documentation UI
+	mux.HandleFunc("GET /swagger", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/swagger/index.html", http.StatusMovedPermanently)
+	})
+	mux.HandleFunc("GET /swagger/", httpSwagger.WrapHandler)
 
 	// Auth & Setup
 	mux.HandleFunc("GET /api/v1/auth/session", s.handleSessionGet)

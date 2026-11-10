@@ -473,6 +473,22 @@ func TestHealth(t *testing.T) {
 	}
 }
 
+func TestSwaggerUI(t *testing.T) {
+	ctx := context.Background()
+	fix := setupFixture(t, false, true)
+
+	req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/swagger/index.html", nil)
+	rec := httptest.NewRecorder()
+	fix.server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for swagger index.html, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "swagger-ui") {
+		t.Fatalf("expected swagger-ui content in response")
+	}
+}
+
 func TestFirstBootGuard(t *testing.T) {
 	ctx := context.Background()
 	fix := setupFixture(t, true, false)

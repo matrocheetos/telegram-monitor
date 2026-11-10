@@ -1,0 +1,938 @@
+basePath: /api/v1
+definitions:
+  github_com_matrocheetos_telegram-monitor_internal_domain.Role:
+    enum:
+    - admin
+    - user
+    type: string
+    x-enum-varnames:
+    - RoleAdmin
+    - RoleUser
+  internal_adapter_primary_http.AdminChannelsListResponse:
+    properties:
+      channels:
+        items:
+          $ref: '#/definitions/internal_adapter_primary_http.ChannelItem'
+        type: array
+    type: object
+  internal_adapter_primary_http.AdminChannelsResponse:
+    properties:
+      adminProductTopic:
+        type: string
+      channels:
+        items:
+          $ref: '#/definitions/internal_adapter_primary_http.ChannelItem'
+        type: array
+      connected:
+        type: boolean
+      couponsChannelsCount:
+        type: integer
+      couponsTopic:
+        type: string
+      phoneMasked:
+        type: string
+      productsChannelsCount:
+        type: integer
+      totalChannelsCount:
+        type: integer
+    type: object
+  internal_adapter_primary_http.AdminUserItem:
+    properties:
+      activeInterestsCount:
+        type: integer
+      createdAt:
+        type: string
+      id:
+        type: integer
+      normalizedNtfyTopic:
+        type: string
+      ntfyTopic:
+        type: string
+      role:
+        $ref: '#/definitions/github_com_matrocheetos_telegram-monitor_internal_domain.Role'
+      username:
+        type: string
+    type: object
+  internal_adapter_primary_http.ChannelItem:
+    properties:
+      chatId:
+        type: integer
+      monitorCoupons:
+        type: boolean
+      monitorProducts:
+        type: boolean
+      title:
+        type: string
+      updatedAt:
+        type: string
+      username:
+        type: string
+    type: object
+  internal_adapter_primary_http.CreateInterestRequest:
+    properties:
+      maxPrice:
+        type: number
+      term:
+        type: string
+    type: object
+  internal_adapter_primary_http.CreateUserRequest:
+    properties:
+      password:
+        type: string
+      role:
+        type: string
+      username:
+        type: string
+    type: object
+  internal_adapter_primary_http.DashboardResponse:
+    properties:
+      activeChannelsCount:
+        type: integer
+      couponsPublicUrl:
+        type: string
+      couponsTopic:
+        type: string
+      interests:
+        items:
+          $ref: '#/definitions/internal_adapter_primary_http.InterestItem'
+        type: array
+      userNormalizedTopic:
+        type: string
+      userPublicUrl:
+        type: string
+      userTopic:
+        type: string
+    type: object
+  internal_adapter_primary_http.ErrorDetail:
+    properties:
+      code:
+        type: string
+      message:
+        type: string
+    type: object
+  internal_adapter_primary_http.ErrorEnvelope:
+    properties:
+      error:
+        $ref: '#/definitions/internal_adapter_primary_http.ErrorDetail'
+    type: object
+  internal_adapter_primary_http.HealthResponse:
+    properties:
+      status:
+        example: ok
+        type: string
+    type: object
+  internal_adapter_primary_http.InterestItem:
+    properties:
+      active:
+        type: boolean
+      createdAt:
+        type: string
+      id:
+        type: integer
+      maxPrice:
+        type: number
+      negativeTokens:
+        items:
+          type: string
+        type: array
+      positiveTokens:
+        items:
+          type: string
+        type: array
+      rawTerm:
+        type: string
+    type: object
+  internal_adapter_primary_http.LoginRequest:
+    properties:
+      password:
+        type: string
+      username:
+        type: string
+    type: object
+  internal_adapter_primary_http.LoginResponse:
+    properties:
+      authenticated:
+        type: boolean
+      telegram:
+        $ref: '#/definitions/internal_adapter_primary_http.TelegramSessionPayload'
+      user:
+        $ref: '#/definitions/internal_adapter_primary_http.UserPayload'
+    type: object
+  internal_adapter_primary_http.OfferCouponItem:
+    properties:
+      channelDisplay:
+        type: string
+      code:
+        type: string
+      createdAt:
+        type: string
+      id:
+        type: integer
+      messageText:
+        type: string
+      storeName:
+        type: string
+      storeUrl:
+        type: string
+    type: object
+  internal_adapter_primary_http.OfferProductItem:
+    properties:
+      channelDisplay:
+        type: string
+      createdAt:
+        type: string
+      extractedPrice:
+        type: number
+      formattedPrice:
+        type: string
+      id:
+        type: integer
+      interestTerm:
+        type: string
+      messageText:
+        type: string
+      offerUrl:
+        type: string
+    type: object
+  internal_adapter_primary_http.OffersResponse:
+    properties:
+      coupons:
+        items:
+          $ref: '#/definitions/internal_adapter_primary_http.OfferCouponItem'
+        type: array
+      couponsCount:
+        type: integer
+      products:
+        items:
+          $ref: '#/definitions/internal_adapter_primary_http.OfferProductItem'
+        type: array
+      productsCount:
+        type: integer
+    type: object
+  internal_adapter_primary_http.ResetPasswordRequest:
+    properties:
+      password:
+        type: string
+    type: object
+  internal_adapter_primary_http.SessionResponse:
+    properties:
+      authenticated:
+        type: boolean
+      csrfToken:
+        type: string
+      needsInitialSetup:
+        type: boolean
+      telegram:
+        $ref: '#/definitions/internal_adapter_primary_http.TelegramSessionPayload'
+      user:
+        $ref: '#/definitions/internal_adapter_primary_http.UserPayload'
+    type: object
+  internal_adapter_primary_http.SetupRequest:
+    properties:
+      password:
+        type: string
+      passwordConfirm:
+        type: string
+      username:
+        type: string
+    type: object
+  internal_adapter_primary_http.StatusResponse:
+    properties:
+      status:
+        example: disconnected
+        type: string
+    type: object
+  internal_adapter_primary_http.TelegramSendCodeRequest:
+    properties:
+      apiHash:
+        type: string
+      apiId:
+        type: integer
+      phone:
+        type: string
+    type: object
+  internal_adapter_primary_http.TelegramSendCodeResponse:
+    properties:
+      codeSent:
+        type: boolean
+      phoneCodeHash:
+        type: string
+    type: object
+  internal_adapter_primary_http.TelegramSessionPayload:
+    properties:
+      connected:
+        type: boolean
+      phoneMasked:
+        type: string
+    type: object
+  internal_adapter_primary_http.TelegramStatusResponse:
+    properties:
+      channelsCount:
+        type: integer
+      connected:
+        type: boolean
+      phoneMasked:
+        type: string
+    type: object
+  internal_adapter_primary_http.TelegramVerifyRequest:
+    properties:
+      password2FA:
+        type: string
+      phoneCode:
+        type: string
+    type: object
+  internal_adapter_primary_http.UpdateChannelItem:
+    properties:
+      chatId:
+        type: integer
+      monitorCoupons:
+        type: boolean
+      monitorProducts:
+        type: boolean
+    type: object
+  internal_adapter_primary_http.UpdateChannelsRequest:
+    properties:
+      channels:
+        items:
+          $ref: '#/definitions/internal_adapter_primary_http.UpdateChannelItem'
+        type: array
+    type: object
+  internal_adapter_primary_http.UpdatedResponse:
+    properties:
+      updated:
+        example: true
+        type: boolean
+    type: object
+  internal_adapter_primary_http.UserPayload:
+    properties:
+      id:
+        type: integer
+      ntfyTopic:
+        type: string
+      role:
+        $ref: '#/definitions/github_com_matrocheetos_telegram-monitor_internal_domain.Role'
+      username:
+        type: string
+    type: object
+host: localhost:8080
+info:
+  contact: {}
+  description: Headless JSON REST API for Telegram Monitor, providing MTProto userbot
+    connection, multi-rule channel product and coupon monitoring, and user management.
+  title: Telegram Monitor REST API
+  version: "1.0"
+paths:
+  /admin/channels:
+    get:
+      description: Returns list of channels and monitoring KPIs
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_adapter_primary_http.AdminChannelsResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_adapter_primary_http.ErrorEnvelope'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/internal_adapter_primary_http.ErrorEnvelope'
+      security:
+      - CookieAuth: []
+      summary: List Telegram channels
+      tags:
+      - Admin Channels
+    put:
+      consumes:
+      - application/json
+      description: Updates monitorProducts and monitorCoupons flags for specified
+        channels
+      parameters:
+      - description: Channel monitoring flags
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/internal_adapter_primary_http.UpdateChannelsRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_adapter_primary_http.UpdatedResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_adapter_primary_http.ErrorEnvelope'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_adapter_primary_http.ErrorEnvelope'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/internal_adapter_primary_http.ErrorEnvelope'
+      security:
+      - CookieAuth: []
+      - CSRFToken: []
+      summary: Update channel monitoring flags
+      tags:
+      - Admin Channels
+  /admin/channels/sync:
+    post:
+      description: Fetches user's dialogs from Telegram MTProto and saves new channels
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_adapter_primary_http.AdminChannelsListResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_adapter_primary_http.ErrorEnvelope'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/internal_adapter_primary_http.ErrorEnvelope'
+      security:
+      - CookieAuth: []
+      - CSRFToken: []
+      summary: Sync Telegram dialogs
+      tags:
+      - Admin Channels
+  /admin/telegram:
+    get:
+      description: Returns MTProto connection status, masked phone, and channels count
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_adapter_primary_http.TelegramStatusResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_adapter_primary_http.ErrorEnvelope'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/internal_adapter_primary_http.ErrorEnvelope'
+      security:
+      - CookieAuth: []
+      summary: Get Telegram connection status
+      tags:
+      - Admin Telegram
+  /admin/telegram/disconnect:
+    post:
+      description: Disconnects active MTProto session and stops Telegram listener
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_adapter_primary_http.StatusResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_adapter_primary_http.ErrorEnvelope'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/internal_adapter_primary_http.ErrorEnvelope'
+      security:
+      - CookieAuth: []
+      - CSRFToken: []
+      summary: Disconnect Telegram session
+      tags:
+      - Admin Telegram
+  /admin/telegram/send-code:
+    post:
+      consumes:
+      - application/json
+      description: Sends OTP verification code to the specified phone number via Telegram
+        MTProto
+      parameters:
+      - description: Telegram credentials and phone
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/internal_adapter_primary_http.TelegramSendCodeRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_adapter_primary_http.TelegramSendCodeResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_adapter_primary_http.ErrorEnvelope'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_adapter_primary_http.ErrorEnvelope'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/internal_adapter_primary_http.ErrorEnvelope'
+      security:
+      - CookieAuth: []
+      - CSRFToken: []
+      summary: Send Telegram MTProto login code
+      tags:
+      - Admin Telegram
+  /admin/telegram/verify:
+    post:
+      consumes:
+      - application/json
+      description: Completes MTProto authentication with OTP and optional 2FA password,
+        and synchronizes initial channels
+      parameters:
+      - description: OTP code and optional 2FA password
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/internal_adapter_primary_http.TelegramVerifyRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_adapter_primary_http.TelegramSessionPayload'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_adapter_primary_http.ErrorEnvelope'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_adapter_primary_http.ErrorEnvelope'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/internal_adapter_primary_http.ErrorEnvelope'
+      security:
+      - CookieAuth: []
+      - CSRFToken: []
+      summary: Verify Telegram OTP code
+      tags:
+      - Admin Telegram
+  /admin/users:
+    get:
+      description: Returns all user accounts with roles and active interests counts
+        (excluding passwords)
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/internal_adapter_primary_http.AdminUserItem'
+            type: array
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_adapter_primary_http.ErrorEnvelope'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/internal_adapter_primary_http.ErrorEnvelope'
+      security:
+      - CookieAuth: []
+      summary: List registered users
+      tags:
+      - Admin Users
+    post:
+      consumes:
+      - application/json
+      description: Creates a new user account with specified username, password, and
+        role
+      parameters:
+      - description: New user details
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/internal_adapter_primary_http.CreateUserRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/internal_adapter_primary_http.AdminUserItem'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_adapter_primary_http.ErrorEnvelope'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_adapter_primary_http.ErrorEnvelope'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/internal_adapter_primary_http.ErrorEnvelope'
+      security:
+      - CookieAuth: []
+      - CSRFToken: []
+      summary: Create user account
+      tags:
+      - Admin Users
+  /admin/users/{id}:
+    delete:
+      description: Deletes user by ID (prevents self-deletion)
+      parameters:
+      - description: User ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_adapter_primary_http.ErrorEnvelope'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_adapter_primary_http.ErrorEnvelope'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/internal_adapter_primary_http.ErrorEnvelope'
+      security:
+      - CookieAuth: []
+      - CSRFToken: []
+      summary: Delete user account
+      tags:
+      - Admin Users
+  /admin/users/{id}/password:
+    put:
+      consumes:
+      - application/json
+      description: Resets password for the specified user ID
+      parameters:
+      - description: User ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: New password
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/internal_adapter_primary_http.ResetPasswordRequest'
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_adapter_primary_http.ErrorEnvelope'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_adapter_primary_http.ErrorEnvelope'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/internal_adapter_primary_http.ErrorEnvelope'
+      security:
+      - CookieAuth: []
+      - CSRFToken: []
+      summary: Reset user password
+      tags:
+      - Admin Users
+  /auth/login:
+    post:
+      consumes:
+      - application/json
+      description: Authenticates user credentials, sets session_id cookie, and returns
+        user details
+      parameters:
+      - description: User login credentials
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/internal_adapter_primary_http.LoginRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_adapter_primary_http.LoginResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_adapter_primary_http.ErrorEnvelope'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_adapter_primary_http.ErrorEnvelope'
+      summary: User Login
+      tags:
+      - Auth
+  /auth/logout:
+    post:
+      description: Revokes session and clears session_id cookie
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+      security:
+      - CookieAuth: []
+      - CSRFToken: []
+      summary: User Logout
+      tags:
+      - Auth
+  /auth/session:
+    get:
+      description: Returns initial setup state, authentication state, CSRF token,
+        and user/telegram details
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_adapter_primary_http.SessionResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/internal_adapter_primary_http.ErrorEnvelope'
+      summary: Get current session
+      tags:
+      - Auth
+  /dashboard:
+    get:
+      description: Returns user ntfy topics, active channels count, and list of monitored
+        search terms
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_adapter_primary_http.DashboardResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_adapter_primary_http.ErrorEnvelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/internal_adapter_primary_http.ErrorEnvelope'
+      security:
+      - CookieAuth: []
+      summary: Get dashboard summary
+      tags:
+      - Dashboard
+  /health:
+    get:
+      description: Returns service health status
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_adapter_primary_http.HealthResponse'
+      summary: Healthcheck
+      tags:
+      - Health
+  /interests:
+    get:
+      description: Returns all product search terms configured by the authenticated
+        user
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/internal_adapter_primary_http.InterestItem'
+            type: array
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_adapter_primary_http.ErrorEnvelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/internal_adapter_primary_http.ErrorEnvelope'
+      security:
+      - CookieAuth: []
+      summary: List monitored interests
+      tags:
+      - Interests
+    post:
+      consumes:
+      - application/json
+      description: Creates a new monitored product search term with negative keyword
+        filtering and optional max price
+      parameters:
+      - description: Interest term and optional max price
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/internal_adapter_primary_http.CreateInterestRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/internal_adapter_primary_http.InterestItem'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_adapter_primary_http.ErrorEnvelope'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_adapter_primary_http.ErrorEnvelope'
+      security:
+      - CookieAuth: []
+      - CSRFToken: []
+      summary: Add monitored interest
+      tags:
+      - Interests
+  /interests/{id}:
+    delete:
+      description: Deletes a monitored search term by ID
+      parameters:
+      - description: Interest ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_adapter_primary_http.ErrorEnvelope'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_adapter_primary_http.ErrorEnvelope'
+      security:
+      - CookieAuth: []
+      - CSRFToken: []
+      summary: Delete monitored interest
+      tags:
+      - Interests
+  /offers:
+    get:
+      description: Queries matched products for user terms and global extracted coupons
+        with search and pagination
+      parameters:
+      - description: Tab filter (products or coupons)
+        in: query
+        name: tab
+        type: string
+      - description: Search keyword
+        in: query
+        name: q
+        type: string
+      - default: 50
+        description: Items per page limit (max 100)
+        in: query
+        name: limit
+        type: integer
+      - default: 0
+        description: Items offset
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_adapter_primary_http.OffersResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_adapter_primary_http.ErrorEnvelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/internal_adapter_primary_http.ErrorEnvelope'
+      security:
+      - CookieAuth: []
+      summary: List matched offers and extracted coupons
+      tags:
+      - Offers
+  /setup:
+    post:
+      consumes:
+      - application/json
+      description: Creates initial admin account on first boot, issues session cookie,
+        and returns session details
+      parameters:
+      - description: Admin initial credentials
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/internal_adapter_primary_http.SetupRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/internal_adapter_primary_http.SessionResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_adapter_primary_http.ErrorEnvelope'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/internal_adapter_primary_http.ErrorEnvelope'
+      summary: Initial Admin Setup
+      tags:
+      - Auth
+schemes:
+- http
+- https
+securityDefinitions:
+  CSRFToken:
+    description: Double-submit CSRF token header for mutating requests.
+    in: header
+    name: X-CSRF-Token
+    type: apiKey
+  CookieAuth:
+    description: Session authentication cookie.
+    in: cookie
+    name: session_id
+    type: apiKey
+swagger: "2.0"

@@ -1,0 +1,1459 @@
+{
+    "schemes": [
+        "http",
+        "https"
+    ],
+    "swagger": "2.0",
+    "info": {
+        "description": "Headless JSON REST API for Telegram Monitor, providing MTProto userbot connection, multi-rule channel product and coupon monitoring, and user management.",
+        "title": "Telegram Monitor REST API",
+        "contact": {},
+        "version": "1.0"
+    },
+    "host": "localhost:8080",
+    "basePath": "/api/v1",
+    "paths": {
+        "/admin/channels": {
+            "get": {
+                "security": [
+                    {
+                        "CookieAuth": []
+                    }
+                ],
+                "description": "Returns list of channels and monitoring KPIs",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Admin Channels"
+                ],
+                "summary": "List Telegram channels",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.AdminChannelsResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.ErrorEnvelope"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.ErrorEnvelope"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "CookieAuth": []
+                    },
+                    {
+                        "CSRFToken": []
+                    }
+                ],
+                "description": "Updates monitorProducts and monitorCoupons flags for specified channels",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Admin Channels"
+                ],
+                "summary": "Update channel monitoring flags",
+                "parameters": [
+                    {
+                        "description": "Channel monitoring flags",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.UpdateChannelsRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.UpdatedResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.ErrorEnvelope"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.ErrorEnvelope"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.ErrorEnvelope"
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/channels/sync": {
+            "post": {
+                "security": [
+                    {
+                        "CookieAuth": []
+                    },
+                    {
+                        "CSRFToken": []
+                    }
+                ],
+                "description": "Fetches user's dialogs from Telegram MTProto and saves new channels",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Admin Channels"
+                ],
+                "summary": "Sync Telegram dialogs",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.AdminChannelsListResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.ErrorEnvelope"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.ErrorEnvelope"
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/telegram": {
+            "get": {
+                "security": [
+                    {
+                        "CookieAuth": []
+                    }
+                ],
+                "description": "Returns MTProto connection status, masked phone, and channels count",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Admin Telegram"
+                ],
+                "summary": "Get Telegram connection status",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.TelegramStatusResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.ErrorEnvelope"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.ErrorEnvelope"
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/telegram/disconnect": {
+            "post": {
+                "security": [
+                    {
+                        "CookieAuth": []
+                    },
+                    {
+                        "CSRFToken": []
+                    }
+                ],
+                "description": "Disconnects active MTProto session and stops Telegram listener",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Admin Telegram"
+                ],
+                "summary": "Disconnect Telegram session",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.StatusResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.ErrorEnvelope"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.ErrorEnvelope"
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/telegram/send-code": {
+            "post": {
+                "security": [
+                    {
+                        "CookieAuth": []
+                    },
+                    {
+                        "CSRFToken": []
+                    }
+                ],
+                "description": "Sends OTP verification code to the specified phone number via Telegram MTProto",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Admin Telegram"
+                ],
+                "summary": "Send Telegram MTProto login code",
+                "parameters": [
+                    {
+                        "description": "Telegram credentials and phone",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.TelegramSendCodeRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.TelegramSendCodeResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.ErrorEnvelope"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.ErrorEnvelope"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.ErrorEnvelope"
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/telegram/verify": {
+            "post": {
+                "security": [
+                    {
+                        "CookieAuth": []
+                    },
+                    {
+                        "CSRFToken": []
+                    }
+                ],
+                "description": "Completes MTProto authentication with OTP and optional 2FA password, and synchronizes initial channels",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Admin Telegram"
+                ],
+                "summary": "Verify Telegram OTP code",
+                "parameters": [
+                    {
+                        "description": "OTP code and optional 2FA password",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.TelegramVerifyRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.TelegramSessionPayload"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.ErrorEnvelope"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.ErrorEnvelope"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.ErrorEnvelope"
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/users": {
+            "get": {
+                "security": [
+                    {
+                        "CookieAuth": []
+                    }
+                ],
+                "description": "Returns all user accounts with roles and active interests counts (excluding passwords)",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Admin Users"
+                ],
+                "summary": "List registered users",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/internal_adapter_primary_http.AdminUserItem"
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.ErrorEnvelope"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.ErrorEnvelope"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "CookieAuth": []
+                    },
+                    {
+                        "CSRFToken": []
+                    }
+                ],
+                "description": "Creates a new user account with specified username, password, and role",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Admin Users"
+                ],
+                "summary": "Create user account",
+                "parameters": [
+                    {
+                        "description": "New user details",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.CreateUserRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.AdminUserItem"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.ErrorEnvelope"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.ErrorEnvelope"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.ErrorEnvelope"
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/users/{id}": {
+            "delete": {
+                "security": [
+                    {
+                        "CookieAuth": []
+                    },
+                    {
+                        "CSRFToken": []
+                    }
+                ],
+                "description": "Deletes user by ID (prevents self-deletion)",
+                "tags": [
+                    "Admin Users"
+                ],
+                "summary": "Delete user account",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "User ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.ErrorEnvelope"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.ErrorEnvelope"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.ErrorEnvelope"
+                        }
+                    }
+                }
+            }
+        },
+        "/admin/users/{id}/password": {
+            "put": {
+                "security": [
+                    {
+                        "CookieAuth": []
+                    },
+                    {
+                        "CSRFToken": []
+                    }
+                ],
+                "description": "Resets password for the specified user ID",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Admin Users"
+                ],
+                "summary": "Reset user password",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "User ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "New password",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.ResetPasswordRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.ErrorEnvelope"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.ErrorEnvelope"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.ErrorEnvelope"
+                        }
+                    }
+                }
+            }
+        },
+        "/auth/login": {
+            "post": {
+                "description": "Authenticates user credentials, sets session_id cookie, and returns user details",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Auth"
+                ],
+                "summary": "User Login",
+                "parameters": [
+                    {
+                        "description": "User login credentials",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.LoginRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.LoginResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.ErrorEnvelope"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.ErrorEnvelope"
+                        }
+                    }
+                }
+            }
+        },
+        "/auth/logout": {
+            "post": {
+                "security": [
+                    {
+                        "CookieAuth": []
+                    },
+                    {
+                        "CSRFToken": []
+                    }
+                ],
+                "description": "Revokes session and clears session_id cookie",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Auth"
+                ],
+                "summary": "User Logout",
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    }
+                }
+            }
+        },
+        "/auth/session": {
+            "get": {
+                "description": "Returns initial setup state, authentication state, CSRF token, and user/telegram details",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Auth"
+                ],
+                "summary": "Get current session",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.SessionResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.ErrorEnvelope"
+                        }
+                    }
+                }
+            }
+        },
+        "/dashboard": {
+            "get": {
+                "security": [
+                    {
+                        "CookieAuth": []
+                    }
+                ],
+                "description": "Returns user ntfy topics, active channels count, and list of monitored search terms",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Dashboard"
+                ],
+                "summary": "Get dashboard summary",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.DashboardResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.ErrorEnvelope"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.ErrorEnvelope"
+                        }
+                    }
+                }
+            }
+        },
+        "/health": {
+            "get": {
+                "description": "Returns service health status",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Health"
+                ],
+                "summary": "Healthcheck",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.HealthResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/interests": {
+            "get": {
+                "security": [
+                    {
+                        "CookieAuth": []
+                    }
+                ],
+                "description": "Returns all product search terms configured by the authenticated user",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Interests"
+                ],
+                "summary": "List monitored interests",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/internal_adapter_primary_http.InterestItem"
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.ErrorEnvelope"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.ErrorEnvelope"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "CookieAuth": []
+                    },
+                    {
+                        "CSRFToken": []
+                    }
+                ],
+                "description": "Creates a new monitored product search term with negative keyword filtering and optional max price",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Interests"
+                ],
+                "summary": "Add monitored interest",
+                "parameters": [
+                    {
+                        "description": "Interest term and optional max price",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.CreateInterestRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.InterestItem"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.ErrorEnvelope"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.ErrorEnvelope"
+                        }
+                    }
+                }
+            }
+        },
+        "/interests/{id}": {
+            "delete": {
+                "security": [
+                    {
+                        "CookieAuth": []
+                    },
+                    {
+                        "CSRFToken": []
+                    }
+                ],
+                "description": "Deletes a monitored search term by ID",
+                "tags": [
+                    "Interests"
+                ],
+                "summary": "Delete monitored interest",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Interest ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.ErrorEnvelope"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.ErrorEnvelope"
+                        }
+                    }
+                }
+            }
+        },
+        "/offers": {
+            "get": {
+                "security": [
+                    {
+                        "CookieAuth": []
+                    }
+                ],
+                "description": "Queries matched products for user terms and global extracted coupons with search and pagination",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Offers"
+                ],
+                "summary": "List matched offers and extracted coupons",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Tab filter (products or coupons)",
+                        "name": "tab",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Search keyword",
+                        "name": "q",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "default": 50,
+                        "description": "Items per page limit (max 100)",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "default": 0,
+                        "description": "Items offset",
+                        "name": "offset",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.OffersResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.ErrorEnvelope"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.ErrorEnvelope"
+                        }
+                    }
+                }
+            }
+        },
+        "/setup": {
+            "post": {
+                "description": "Creates initial admin account on first boot, issues session cookie, and returns session details",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Auth"
+                ],
+                "summary": "Initial Admin Setup",
+                "parameters": [
+                    {
+                        "description": "Admin initial credentials",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.SetupRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.SessionResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.ErrorEnvelope"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.ErrorEnvelope"
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "definitions": {
+        "github_com_matrocheetos_telegram-monitor_internal_domain.Role": {
+            "type": "string",
+            "enum": [
+                "admin",
+                "user"
+            ],
+            "x-enum-varnames": [
+                "RoleAdmin",
+                "RoleUser"
+            ]
+        },
+        "internal_adapter_primary_http.AdminChannelsListResponse": {
+            "type": "object",
+            "properties": {
+                "channels": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_adapter_primary_http.ChannelItem"
+                    }
+                }
+            }
+        },
+        "internal_adapter_primary_http.AdminChannelsResponse": {
+            "type": "object",
+            "properties": {
+                "adminProductTopic": {
+                    "type": "string"
+                },
+                "channels": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_adapter_primary_http.ChannelItem"
+                    }
+                },
+                "connected": {
+                    "type": "boolean"
+                },
+                "couponsChannelsCount": {
+                    "type": "integer"
+                },
+                "couponsTopic": {
+                    "type": "string"
+                },
+                "phoneMasked": {
+                    "type": "string"
+                },
+                "productsChannelsCount": {
+                    "type": "integer"
+                },
+                "totalChannelsCount": {
+                    "type": "integer"
+                }
+            }
+        },
+        "internal_adapter_primary_http.AdminUserItem": {
+            "type": "object",
+            "properties": {
+                "activeInterestsCount": {
+                    "type": "integer"
+                },
+                "createdAt": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "normalizedNtfyTopic": {
+                    "type": "string"
+                },
+                "ntfyTopic": {
+                    "type": "string"
+                },
+                "role": {
+                    "$ref": "#/definitions/github_com_matrocheetos_telegram-monitor_internal_domain.Role"
+                },
+                "username": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_adapter_primary_http.ChannelItem": {
+            "type": "object",
+            "properties": {
+                "chatId": {
+                    "type": "integer"
+                },
+                "monitorCoupons": {
+                    "type": "boolean"
+                },
+                "monitorProducts": {
+                    "type": "boolean"
+                },
+                "title": {
+                    "type": "string"
+                },
+                "updatedAt": {
+                    "type": "string"
+                },
+                "username": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_adapter_primary_http.CreateInterestRequest": {
+            "type": "object",
+            "properties": {
+                "maxPrice": {
+                    "type": "number"
+                },
+                "term": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_adapter_primary_http.CreateUserRequest": {
+            "type": "object",
+            "properties": {
+                "password": {
+                    "type": "string"
+                },
+                "role": {
+                    "type": "string"
+                },
+                "username": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_adapter_primary_http.DashboardResponse": {
+            "type": "object",
+            "properties": {
+                "activeChannelsCount": {
+                    "type": "integer"
+                },
+                "couponsPublicUrl": {
+                    "type": "string"
+                },
+                "couponsTopic": {
+                    "type": "string"
+                },
+                "interests": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_adapter_primary_http.InterestItem"
+                    }
+                },
+                "userNormalizedTopic": {
+                    "type": "string"
+                },
+                "userPublicUrl": {
+                    "type": "string"
+                },
+                "userTopic": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_adapter_primary_http.ErrorDetail": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string"
+                },
+                "message": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_adapter_primary_http.ErrorEnvelope": {
+            "type": "object",
+            "properties": {
+                "error": {
+                    "$ref": "#/definitions/internal_adapter_primary_http.ErrorDetail"
+                }
+            }
+        },
+        "internal_adapter_primary_http.HealthResponse": {
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "example": "ok"
+                }
+            }
+        },
+        "internal_adapter_primary_http.InterestItem": {
+            "type": "object",
+            "properties": {
+                "active": {
+                    "type": "boolean"
+                },
+                "createdAt": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "maxPrice": {
+                    "type": "number"
+                },
+                "negativeTokens": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "positiveTokens": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "rawTerm": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_adapter_primary_http.LoginRequest": {
+            "type": "object",
+            "properties": {
+                "password": {
+                    "type": "string"
+                },
+                "username": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_adapter_primary_http.LoginResponse": {
+            "type": "object",
+            "properties": {
+                "authenticated": {
+                    "type": "boolean"
+                },
+                "telegram": {
+                    "$ref": "#/definitions/internal_adapter_primary_http.TelegramSessionPayload"
+                },
+                "user": {
+                    "$ref": "#/definitions/internal_adapter_primary_http.UserPayload"
+                }
+            }
+        },
+        "internal_adapter_primary_http.OfferCouponItem": {
+            "type": "object",
+            "properties": {
+                "channelDisplay": {
+                    "type": "string"
+                },
+                "code": {
+                    "type": "string"
+                },
+                "createdAt": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "messageText": {
+                    "type": "string"
+                },
+                "storeName": {
+                    "type": "string"
+                },
+                "storeUrl": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_adapter_primary_http.OfferProductItem": {
+            "type": "object",
+            "properties": {
+                "channelDisplay": {
+                    "type": "string"
+                },
+                "createdAt": {
+                    "type": "string"
+                },
+                "extractedPrice": {
+                    "type": "number"
+                },
+                "formattedPrice": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "interestTerm": {
+                    "type": "string"
+                },
+                "messageText": {
+                    "type": "string"
+                },
+                "offerUrl": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_adapter_primary_http.OffersResponse": {
+            "type": "object",
+            "properties": {
+                "coupons": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_adapter_primary_http.OfferCouponItem"
+                    }
+                },
+                "couponsCount": {
+                    "type": "integer"
+                },
+                "products": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_adapter_primary_http.OfferProductItem"
+                    }
+                },
+                "productsCount": {
+                    "type": "integer"
+                }
+            }
+        },
+        "internal_adapter_primary_http.ResetPasswordRequest": {
+            "type": "object",
+            "properties": {
+                "password": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_adapter_primary_http.SessionResponse": {
+            "type": "object",
+            "properties": {
+                "authenticated": {
+                    "type": "boolean"
+                },
+                "csrfToken": {
+                    "type": "string"
+                },
+                "needsInitialSetup": {
+                    "type": "boolean"
+                },
+                "telegram": {
+                    "$ref": "#/definitions/internal_adapter_primary_http.TelegramSessionPayload"
+                },
+                "user": {
+                    "$ref": "#/definitions/internal_adapter_primary_http.UserPayload"
+                }
+            }
+        },
+        "internal_adapter_primary_http.SetupRequest": {
+            "type": "object",
+            "properties": {
+                "password": {
+                    "type": "string"
+                },
+                "passwordConfirm": {
+                    "type": "string"
+                },
+                "username": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_adapter_primary_http.StatusResponse": {
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "example": "disconnected"
+                }
+            }
+        },
+        "internal_adapter_primary_http.TelegramSendCodeRequest": {
+            "type": "object",
+            "properties": {
+                "apiHash": {
+                    "type": "string"
+                },
+                "apiId": {
+                    "type": "integer"
+                },
+                "phone": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_adapter_primary_http.TelegramSendCodeResponse": {
+            "type": "object",
+            "properties": {
+                "codeSent": {
+                    "type": "boolean"
+                },
+                "phoneCodeHash": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_adapter_primary_http.TelegramSessionPayload": {
+            "type": "object",
+            "properties": {
+                "connected": {
+                    "type": "boolean"
+                },
+                "phoneMasked": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_adapter_primary_http.TelegramStatusResponse": {
+            "type": "object",
+            "properties": {
+                "channelsCount": {
+                    "type": "integer"
+                },
+                "connected": {
+                    "type": "boolean"
+                },
+                "phoneMasked": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_adapter_primary_http.TelegramVerifyRequest": {
+            "type": "object",
+            "properties": {
+                "password2FA": {
+                    "type": "string"
+                },
+                "phoneCode": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_adapter_primary_http.UpdateChannelItem": {
+            "type": "object",
+            "properties": {
+                "chatId": {
+                    "type": "integer"
+                },
+                "monitorCoupons": {
+                    "type": "boolean"
+                },
+                "monitorProducts": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "internal_adapter_primary_http.UpdateChannelsRequest": {
+            "type": "object",
+            "properties": {
+                "channels": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_adapter_primary_http.UpdateChannelItem"
+                    }
+                }
+            }
+        },
+        "internal_adapter_primary_http.UpdatedResponse": {
+            "type": "object",
+            "properties": {
+                "updated": {
+                    "type": "boolean",
+                    "example": true
+                }
+            }
+        },
+        "internal_adapter_primary_http.UserPayload": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "integer"
+                },
+                "ntfyTopic": {
+                    "type": "string"
+                },
+                "role": {
+                    "$ref": "#/definitions/github_com_matrocheetos_telegram-monitor_internal_domain.Role"
+                },
+                "username": {
+                    "type": "string"
+                }
+            }
+        }
+    },
+    "securityDefinitions": {
+        "CSRFToken": {
+            "description": "Double-submit CSRF token header for mutating requests.",
+            "type": "apiKey",
+            "name": "X-CSRF-Token",
+            "in": "header"
+        },
+        "CookieAuth": {
+            "description": "Session authentication cookie.",
+            "type": "apiKey",
+            "name": "session_id",
+            "in": "cookie"
+        }
+    }
+}

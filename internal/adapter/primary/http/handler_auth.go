@@ -6,12 +6,27 @@ import (
 	"github.com/matrocheetos/telegram-monitor/internal/domain"
 )
 
+// handleHealthGet godoc
+// @Summary      Healthcheck
+// @Description  Returns service health status
+// @Tags         Health
+// @Produce      json
+// @Success      200  {object}  HealthResponse
+// @Router       /health [get]
 func (s *Server) handleHealthGet(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{
-		"status": "ok",
+	writeJSON(w, http.StatusOK, HealthResponse{
+		Status: "ok",
 	})
 }
 
+// handleSessionGet godoc
+// @Summary      Get current session
+// @Description  Returns initial setup state, authentication state, CSRF token, and user/telegram details
+// @Tags         Auth
+// @Produce      json
+// @Success      200  {object}  SessionResponse
+// @Failure      500  {object}  ErrorEnvelope
+// @Router       /auth/session [get]
 func (s *Server) handleSessionGet(w http.ResponseWriter, r *http.Request) {
 	needsSetup, err := s.setupUseCase.NeedsInitialSetup(r.Context())
 	if err != nil {
@@ -55,6 +70,17 @@ func (s *Server) handleSessionGet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// handleSetupPost godoc
+// @Summary      Initial Admin Setup
+// @Description  Creates initial admin account on first boot, issues session cookie, and returns session details
+// @Tags         Auth
+// @Accept       json
+// @Produce      json
+// @Param        request  body      SetupRequest  true  "Admin initial credentials"
+// @Success      201      {object}  SessionResponse
+// @Failure      400      {object}  ErrorEnvelope
+// @Failure      403      {object}  ErrorEnvelope
+// @Router       /setup [post]
 func (s *Server) handleSetupPost(w http.ResponseWriter, r *http.Request) {
 	var req SetupRequest
 	if err := readJSON(w, r, &req); err != nil {
@@ -110,6 +136,17 @@ func (s *Server) handleSetupPost(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleLoginPost godoc
+// @Summary      User Login
+// @Description  Authenticates user credentials, sets session_id cookie, and returns user details
+// @Tags         Auth
+// @Accept       json
+// @Produce      json
+// @Param        request  body      LoginRequest  true  "User login credentials"
+// @Success      200      {object}  LoginResponse
+// @Failure      400      {object}  ErrorEnvelope
+// @Failure      401      {object}  ErrorEnvelope
+// @Router       /auth/login [post]
 func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 	var req LoginRequest
 	if err := readJSON(w, r, &req); err != nil {
@@ -161,6 +198,15 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleLogoutPost godoc
+// @Summary      User Logout
+// @Description  Revokes session and clears session_id cookie
+// @Tags         Auth
+// @Produce      json
+// @Success      204      "No Content"
+// @Security     CookieAuth
+// @Security     CSRFToken
+// @Router       /auth/logout [post]
 func (s *Server) handleLogoutPost(w http.ResponseWriter, r *http.Request) {
 	cookie, err := r.Cookie("session_id")
 	if err == nil && cookie.Value != "" {
