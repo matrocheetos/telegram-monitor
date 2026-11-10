@@ -15,7 +15,6 @@ import (
 	"time"
 
 	httpAdapter "github.com/matrocheetos/telegram-monitor/internal/adapter/primary/http"
-	"github.com/matrocheetos/telegram-monitor/internal/adapter/primary/http/i18n"
 	"github.com/matrocheetos/telegram-monitor/internal/adapter/secondary/apprise"
 	"github.com/matrocheetos/telegram-monitor/internal/adapter/secondary/crypto"
 	"github.com/matrocheetos/telegram-monitor/internal/adapter/secondary/gotd"
@@ -149,11 +148,13 @@ func run() error {
 	tgAuthSvc := service.NewTelegramAuthService(gotdManager, credRepo)
 	channelSvc := service.NewChannelService(channelRepo, gotdManager, monitorSvc)
 	interestSvc := service.NewInterestService(interestRepo, monitorSvc)
-
-	translator, err := i18n.NewTranslator()
-	if err != nil {
-		return fmt.Errorf("initialize i18n translator: %w", err)
-	}
+	offerSvc := service.NewOfferService(matchRepo, couponRepo, service.OfferServiceConfig{
+		RetentionDays: 90,
+		MaxKeep:       100000,
+		BatchSize:     1000,
+	})
+	offerSvc.StartRetentionJob(ctx, 1*time.Hour)
+	defer offerSvc.Stop()
 
 	port := 8080
 	if pStr := os.Getenv("HTTP_PORT"); pStr != "" {
@@ -167,6 +168,7 @@ func run() error {
 			Port:               port,
 			NtfyURL:            ntfyURL,
 			NtfyTopicSeparator: ntfyTopicSep,
+			CORSAllowedOrigins: os.Getenv("CORS_ALLOWED_ORIGINS"),
 		},
 		authSvc,
 		authSvc,
@@ -174,7 +176,7 @@ func run() error {
 		tgAuthSvc,
 		channelSvc,
 		interestSvc,
-		translator,
+		offerSvc,
 	)
 	if err != nil {
 		return fmt.Errorf("create http adapter server: %w", err)

@@ -194,6 +194,22 @@ func (m *mockMatchRepo) RecordProductMatch(ctx context.Context, userID int64, in
 	return nil
 }
 
+func (m *mockMatchRepo) ListUserMatchedProducts(ctx context.Context, userID int64, searchQuery string, limit, offset int) ([]domain.UserMatchedProduct, int, error) {
+	return nil, 0, nil
+}
+
+func (m *mockMatchRepo) PruneOlderThan(ctx context.Context, cutoff time.Time, batchSize int) (int64, error) {
+	return 0, nil
+}
+
+func (m *mockMatchRepo) PruneExcessAbove(ctx context.Context, maxKeep int64, batchSize int) (int64, error) {
+	return 0, nil
+}
+
+func (m *mockMatchRepo) CountTotal(ctx context.Context) (int64, error) {
+	return 0, nil
+}
+
 type mockCouponRepo struct {
 	mu      sync.Mutex
 	coupons []domain.Coupon
@@ -208,6 +224,22 @@ func (m *mockCouponRepo) RecordCoupon(ctx context.Context, code, storeName, stor
 		StoreURL:  storeURL,
 	})
 	return nil
+}
+
+func (m *mockCouponRepo) ListExtractedCoupons(ctx context.Context, searchQuery string, limit, offset int) ([]domain.ExtractedCoupon, int, error) {
+	return nil, 0, nil
+}
+
+func (m *mockCouponRepo) PruneOlderThan(ctx context.Context, cutoff time.Time, batchSize int) (int64, error) {
+	return 0, nil
+}
+
+func (m *mockCouponRepo) PruneExcessAbove(ctx context.Context, maxKeep int64, batchSize int) (int64, error) {
+	return 0, nil
+}
+
+func (m *mockCouponRepo) CountTotal(ctx context.Context) (int64, error) {
+	return 0, nil
 }
 
 type mockNotificationGateway struct {

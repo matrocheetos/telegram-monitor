@@ -1,110 +1,164 @@
 package http
 
 import (
-	"errors"
 	"net/http"
-	"net/url"
-	"strings"
 
-	"github.com/matrocheetos/telegram-monitor/internal/adapter/primary/http/i18n"
 	"github.com/matrocheetos/telegram-monitor/internal/domain"
 )
 
-func (s *Server) handleSetupGet(w http.ResponseWriter, r *http.Request) {
-	s.render(w, r, "setup.html", ViewData{
-		Title: s.translator.T(i18n.GetLanguage(r.Context()), "setup_title"),
+func (s *Server) handleHealthGet(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{
+		"status": "ok",
 	})
+}
+
+func (s *Server) handleSessionGet(w http.ResponseWriter, r *http.Request) {
+	needsSetup, err := s.setupUseCase.NeedsInitialSetup(r.Context())
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+
+	user := GetUser(r.Context())
+	csrfToken := GetCSRFToken(r.Context())
+
+	resp := SessionResponse{
+		NeedsInitialSetup: needsSetup,
+		Authenticated:     user != nil,
+		CSRFToken:         csrfToken,
+	}
+
+	if user != nil {
+		resp.User = &UserPayload{
+			ID:        user.ID,
+			Username:  user.Username,
+			Role:      user.Role,
+			NtfyTopic: user.NtfyTopic,
+		}
+
+		if user.Role == domain.RoleAdmin {
+			connected, phoneMasked, err := s.telegramAuthUseCase.GetConnectionStatus(r.Context())
+			if err == nil {
+				resp.Telegram = &TelegramSessionPayload{
+					Connected:   connected,
+					PhoneMasked: phoneMasked,
+				}
+			} else {
+				resp.Telegram = &TelegramSessionPayload{
+					Connected:   false,
+					PhoneMasked: "",
+				}
+			}
+		}
+	}
+
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleSetupPost(w http.ResponseWriter, r *http.Request) {
-	lang := i18n.GetLanguage(r.Context())
-	username := strings.TrimSpace(r.PostFormValue("username"))
-	password := r.PostFormValue("password")
-	passwordConfirm := r.PostFormValue("password_confirm")
-
-	if password != passwordConfirm {
-		setFlash(w, "error", s.translator.T(lang, "msg_password_mismatch"))
-		http.Redirect(w, r, "/setup", http.StatusSeeOther)
+	var req SetupRequest
+	if err := readJSON(w, r, &req); err != nil {
+		writeErrorJSON(w, http.StatusBadRequest, "invalid_request", "invalid json body")
 		return
 	}
 
-	_, err := s.setupUseCase.CreateInitialAdmin(r.Context(), username, password)
+	if req.Username == "" || req.Password == "" {
+		writeErrorJSON(w, http.StatusBadRequest, "invalid_request", "username and password are required")
+		return
+	}
+
+	if req.Password != req.PasswordConfirm {
+		writeErrorJSON(w, http.StatusBadRequest, "password_mismatch", "passwords do not match")
+		return
+	}
+
+	if _, err := s.setupUseCase.CreateInitialAdmin(r.Context(), req.Username, req.Password); err != nil {
+		writeDomainError(w, err)
+		return
+	}
+
+	user, token, err := s.authUseCase.Login(r.Context(), req.Username, req.Password)
 	if err != nil {
-		setFlash(w, "error", err.Error())
-		http.Redirect(w, r, "/setup", http.StatusSeeOther)
+		writeDomainError(w, err)
 		return
 	}
 
-	_, token, err := s.authUseCase.Login(r.Context(), username, password)
-	if err == nil {
-		//nolint:gosec // session cookie security attributes managed for reverse-proxy deployment
-		http.SetCookie(w, &http.Cookie{
-			Name:     "session_id",
-			Value:    token,
-			Path:     "/",
-			MaxAge:   7 * 24 * 3600,
-			HttpOnly: true,
-			SameSite: http.SameSiteLaxMode,
-		})
-	}
-
-	setFlash(w, "success", s.translator.T(lang, "msg_setup_success"))
-	http.Redirect(w, r, "/admin/telegram", http.StatusSeeOther)
-}
-
-func (s *Server) handleLoginGet(w http.ResponseWriter, r *http.Request) {
-	if user := GetUser(r.Context()); user != nil {
-		if user.Role == domain.RoleAdmin {
-			connected, _, err := s.telegramAuthUseCase.GetConnectionStatus(r.Context())
-			if err == nil && !connected {
-				http.Redirect(w, r, "/admin/telegram", http.StatusSeeOther)
-				return
-			}
-		}
-		http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
-		return
-	}
-
-	s.render(w, r, "login.html", ViewData{
-		Title: s.translator.T(i18n.GetLanguage(r.Context()), "login_title"),
-	})
-}
-
-func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
-	lang := i18n.GetLanguage(r.Context())
-	username := strings.TrimSpace(r.PostFormValue("username"))
-	password := r.PostFormValue("password")
-
-	user, token, err := s.authUseCase.Login(r.Context(), username, password)
-	if err != nil {
-		msg := s.translator.T(lang, "msg_login_failed")
-		if !errors.Is(err, domain.ErrInvalidCredentials) {
-			msg = err.Error()
-		}
-		setFlash(w, "error", msg)
-		http.Redirect(w, r, "/login", http.StatusSeeOther)
-		return
-	}
-
-	//nolint:gosec // session cookie security attributes managed for reverse-proxy deployment
+	//nolint:gosec // session cookie for api
 	http.SetCookie(w, &http.Cookie{
 		Name:     "session_id",
 		Value:    token,
 		Path:     "/",
-		MaxAge:   7 * 24 * 3600,
+		MaxAge:   30 * 24 * 3600,
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
 	})
 
+	writeJSON(w, http.StatusCreated, SessionResponse{
+		NeedsInitialSetup: false,
+		Authenticated:     true,
+		CSRFToken:         GetCSRFToken(r.Context()),
+		User: &UserPayload{
+			ID:        user.ID,
+			Username:  user.Username,
+			Role:      user.Role,
+			NtfyTopic: user.NtfyTopic,
+		},
+		Telegram: &TelegramSessionPayload{
+			Connected:   false,
+			PhoneMasked: "",
+		},
+	})
+}
+
+func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
+	var req LoginRequest
+	if err := readJSON(w, r, &req); err != nil {
+		writeErrorJSON(w, http.StatusBadRequest, "invalid_request", "invalid json body")
+		return
+	}
+
+	user, token, err := s.authUseCase.Login(r.Context(), req.Username, req.Password)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+
+	//nolint:gosec // session cookie for api
+	http.SetCookie(w, &http.Cookie{
+		Name:     "session_id",
+		Value:    token,
+		Path:     "/",
+		MaxAge:   30 * 24 * 3600,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	})
+
+	var tgPayload *TelegramSessionPayload
 	if user.Role == domain.RoleAdmin {
-		connected, _, err := s.telegramAuthUseCase.GetConnectionStatus(r.Context())
-		if err == nil && !connected {
-			http.Redirect(w, r, "/admin/telegram", http.StatusSeeOther)
-			return
+		connected, phoneMasked, err := s.telegramAuthUseCase.GetConnectionStatus(r.Context())
+		if err == nil {
+			tgPayload = &TelegramSessionPayload{
+				Connected:   connected,
+				PhoneMasked: phoneMasked,
+			}
+		} else {
+			tgPayload = &TelegramSessionPayload{
+				Connected:   false,
+				PhoneMasked: "",
+			}
 		}
 	}
 
-	http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
+	writeJSON(w, http.StatusOK, LoginResponse{
+		Authenticated: true,
+		User: UserPayload{
+			ID:        user.ID,
+			Username:  user.Username,
+			Role:      user.Role,
+			NtfyTopic: user.NtfyTopic,
+		},
+		Telegram: tgPayload,
+	})
 }
 
 func (s *Server) handleLogoutPost(w http.ResponseWriter, r *http.Request) {
@@ -123,31 +177,5 @@ func (s *Server) handleLogoutPost(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteLaxMode,
 	})
 
-	http.Redirect(w, r, "/login", http.StatusSeeOther)
-}
-
-func (s *Server) handleLangPost(w http.ResponseWriter, r *http.Request) {
-	lang := r.PostFormValue("lang")
-	normalized := s.translator.NormalizeLang(lang)
-
-	//nolint:gosec // language preference cookie managed for reverse-proxy deployment
-	http.SetCookie(w, &http.Cookie{
-		Name:     "lang",
-		Value:    normalized,
-		Path:     "/",
-		MaxAge:   365 * 24 * 3600,
-		SameSite: http.SameSiteLaxMode,
-	})
-
-	cleanRedirect := "/"
-	if ref := r.Header.Get("Referer"); ref != "" {
-		if parsed, err := url.Parse(ref); err == nil && parsed.Path != "" && strings.HasPrefix(parsed.Path, "/") {
-			cleanRedirect = parsed.Path
-			if parsed.RawQuery != "" {
-				cleanRedirect += "?" + parsed.RawQuery
-			}
-		}
-	}
-	//nolint:gosec // sanitized relative redirect target
-	http.Redirect(w, r, cleanRedirect, http.StatusSeeOther)
+	w.WriteHeader(http.StatusNoContent)
 }

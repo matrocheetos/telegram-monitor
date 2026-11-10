@@ -50,3 +50,9 @@ type MessageProcessor interface {
 type SnapshotRebuilder interface {
 	RebuildSnapshot(ctx context.Context) error
 }
+
+type OfferHistoryUseCase interface {
+	ListUserMatchedProducts(ctx context.Context, userID int64, searchQuery string, limit, offset int) ([]domain.UserMatchedProduct, int, error)
+	ListExtractedCoupons(ctx context.Context, searchQuery string, limit, offset int) ([]domain.ExtractedCoupon, int, error)
+	RunRetentionCleanup(ctx context.Context) error
+}

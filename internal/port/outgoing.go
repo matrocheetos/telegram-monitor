@@ -55,10 +55,18 @@ type InterestRepository interface {
 
 type MatchHistoryRepository interface {
 	RecordProductMatch(ctx context.Context, userID int64, interestID *int64, channelID int64, price *float64, text string) error
+	ListUserMatchedProducts(ctx context.Context, userID int64, searchQuery string, limit, offset int) ([]domain.UserMatchedProduct, int, error)
+	PruneOlderThan(ctx context.Context, cutoff time.Time, batchSize int) (int64, error)
+	PruneExcessAbove(ctx context.Context, maxKeep int64, batchSize int) (int64, error)
+	CountTotal(ctx context.Context) (int64, error)
 }
 
 type CouponRepository interface {
 	RecordCoupon(ctx context.Context, code, storeName, storeURL string, channelID int64, text string) error
+	ListExtractedCoupons(ctx context.Context, searchQuery string, limit, offset int) ([]domain.ExtractedCoupon, int, error)
+	PruneOlderThan(ctx context.Context, cutoff time.Time, batchSize int) (int64, error)
+	PruneExcessAbove(ctx context.Context, maxKeep int64, batchSize int) (int64, error)
+	CountTotal(ctx context.Context) (int64, error)
 }
 
 type CryptoService interface {

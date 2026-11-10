@@ -3,107 +3,102 @@ package http
 import (
 	"net/http"
 	"strconv"
-	"strings"
 
-	"github.com/matrocheetos/telegram-monitor/internal/adapter/primary/http/i18n"
 	"github.com/matrocheetos/telegram-monitor/internal/domain"
 )
 
-type TelegramViewData struct {
-	Connected   bool
-	PhoneMasked string
-	APIID       string
-	APIHash     string
-	Phone       string
-}
-
-type ChannelsViewData struct {
-	Connected             bool
-	PhoneMasked           string
-	Channels              []*domain.TelegramChannel
-	CouponsChannelsCount  int
-	ProductsChannelsCount int
-}
-
-type UsersViewData struct {
-	Users []*domain.User
-}
-
 func (s *Server) handleAdminTelegramGet(w http.ResponseWriter, r *http.Request) {
-	connected, phoneMasked, _ := s.telegramAuthUseCase.GetConnectionStatus(r.Context())
+	connected, phoneMasked, err := s.telegramAuthUseCase.GetConnectionStatus(r.Context())
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
 
-	s.render(w, r, "admin_telegram.html", ViewData{
-		Title:     s.translator.T(i18n.GetLanguage(r.Context()), "admin_tg_title"),
-		ActiveNav: "telegram",
-		Data: TelegramViewData{
-			Connected:   connected,
-			PhoneMasked: phoneMasked,
-		},
+	channels, err := s.channelUseCase.ListChannels(r.Context())
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, TelegramStatusResponse{
+		Connected:     connected,
+		PhoneMasked:   phoneMasked,
+		ChannelsCount: len(channels),
 	})
 }
 
 func (s *Server) handleAdminTelegramSendCodePost(w http.ResponseWriter, r *http.Request) {
-	lang := i18n.GetLanguage(r.Context())
-	apiIDStr := strings.TrimSpace(r.PostFormValue("api_id"))
-	apiHash := strings.TrimSpace(r.PostFormValue("api_hash"))
-	phone := strings.TrimSpace(r.PostFormValue("phone"))
-
-	apiID, err := strconv.Atoi(apiIDStr)
-	if err != nil || apiID <= 0 {
-		setFlash(w, "error", "Invalid API_ID")
-		http.Redirect(w, r, "/admin/telegram", http.StatusSeeOther)
+	var req TelegramSendCodeRequest
+	if err := readJSON(w, r, &req); err != nil {
+		writeErrorJSON(w, http.StatusBadRequest, "invalid_request", "invalid json body")
 		return
 	}
 
-	_, err = s.telegramAuthUseCase.SendLoginCode(r.Context(), apiID, apiHash, phone)
+	phoneCodeHash, err := s.telegramAuthUseCase.SendLoginCode(r.Context(), req.APIID, req.APIHash, req.Phone)
 	if err != nil {
-		setFlash(w, "error", err.Error())
-	} else {
-		setFlash(w, "success", s.translator.T(lang, "msg_code_sent"))
+		writeDomainError(w, err)
+		return
 	}
 
-	http.Redirect(w, r, "/admin/telegram", http.StatusSeeOther)
+	writeJSON(w, http.StatusOK, TelegramSendCodeResponse{
+		CodeSent:      true,
+		PhoneCodeHash: phoneCodeHash,
+	})
 }
 
 func (s *Server) handleAdminTelegramVerifyPost(w http.ResponseWriter, r *http.Request) {
-	lang := i18n.GetLanguage(r.Context())
-	phoneCode := strings.TrimSpace(r.PostFormValue("phone_code"))
-	password2FA := r.PostFormValue("password_2fa")
+	var req TelegramVerifyRequest
+	if err := readJSON(w, r, &req); err != nil {
+		writeErrorJSON(w, http.StatusBadRequest, "invalid_request", "invalid json body")
+		return
+	}
 
-	err := s.telegramAuthUseCase.VerifyLoginCode(r.Context(), phoneCode, password2FA)
-	if err != nil {
-		setFlash(w, "error", err.Error())
-		http.Redirect(w, r, "/admin/telegram", http.StatusSeeOther)
+	if err := s.telegramAuthUseCase.VerifyLoginCode(r.Context(), req.PhoneCode, req.Password2FA); err != nil {
+		writeDomainError(w, err)
 		return
 	}
 
 	_ = s.channelUseCase.SyncChannels(r.Context())
 
-	setFlash(w, "success", s.translator.T(lang, "msg_telegram_connected"))
-	http.Redirect(w, r, "/admin/channels", http.StatusSeeOther)
+	connected, phoneMasked, err := s.telegramAuthUseCase.GetConnectionStatus(r.Context())
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, TelegramSessionPayload{
+		Connected:   connected,
+		PhoneMasked: phoneMasked,
+	})
 }
 
 func (s *Server) handleAdminTelegramDisconnectPost(w http.ResponseWriter, r *http.Request) {
-	lang := i18n.GetLanguage(r.Context())
-	err := s.telegramAuthUseCase.Disconnect(r.Context())
-	if err != nil {
-		setFlash(w, "error", err.Error())
-	} else {
-		setFlash(w, "success", s.translator.T(lang, "msg_telegram_disconnected"))
+	if err := s.telegramAuthUseCase.Disconnect(r.Context()); err != nil {
+		writeDomainError(w, err)
+		return
 	}
 
-	http.Redirect(w, r, "/admin/telegram", http.StatusSeeOther)
+	writeJSON(w, http.StatusOK, map[string]string{
+		"status": "disconnected",
+	})
 }
 
 func (s *Server) handleAdminChannelsGet(w http.ResponseWriter, r *http.Request) {
-	connected, phoneMasked, _ := s.telegramAuthUseCase.GetConnectionStatus(r.Context())
+	connected, phoneMasked, err := s.telegramAuthUseCase.GetConnectionStatus(r.Context())
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+
 	channels, err := s.channelUseCase.ListChannels(r.Context())
 	if err != nil {
-		channels = []*domain.TelegramChannel{}
+		writeDomainError(w, err)
+		return
 	}
 
 	couponsCount := 0
 	productsCount := 0
+	items := make([]ChannelItem, 0, len(channels))
 	for _, ch := range channels {
 		if ch.MonitorCoupons {
 			couponsCount++
@@ -111,131 +106,188 @@ func (s *Server) handleAdminChannelsGet(w http.ResponseWriter, r *http.Request) 
 		if ch.MonitorProducts {
 			productsCount++
 		}
+		items = append(items, ChannelItem{
+			ChatID:          ch.ChatID,
+			Username:        ch.Username,
+			Title:           ch.Title,
+			MonitorProducts: ch.MonitorProducts,
+			MonitorCoupons:  ch.MonitorCoupons,
+			UpdatedAt:       ch.UpdatedAt,
+		})
 	}
 
-	s.render(w, r, "admin_channels.html", ViewData{
-		Title:     s.translator.T(i18n.GetLanguage(r.Context()), "admin_ch_title"),
-		ActiveNav: "channels",
-		Data: ChannelsViewData{
-			Connected:             connected,
-			PhoneMasked:           phoneMasked,
-			Channels:              channels,
-			CouponsChannelsCount:  couponsCount,
-			ProductsChannelsCount: productsCount,
-		},
+	user := GetUser(r.Context())
+	adminTopic := ""
+	if user != nil {
+		adminTopic = user.NtfyTopic
+	}
+
+	writeJSON(w, http.StatusOK, AdminChannelsResponse{
+		Connected:             connected,
+		PhoneMasked:           phoneMasked,
+		TotalChannelsCount:    len(channels),
+		CouponsChannelsCount:  couponsCount,
+		ProductsChannelsCount: productsCount,
+		AdminProductTopic:     adminTopic,
+		CouponsTopic:          "promo/cupom",
+		Channels:              items,
 	})
 }
 
 func (s *Server) handleAdminChannelsSyncPost(w http.ResponseWriter, r *http.Request) {
-	lang := i18n.GetLanguage(r.Context())
-	err := s.channelUseCase.SyncChannels(r.Context())
-	if err != nil {
-		setFlash(w, "error", err.Error())
-	} else {
-		setFlash(w, "success", s.translator.T(lang, "msg_channels_synced"))
+	if err := s.channelUseCase.SyncChannels(r.Context()); err != nil {
+		writeDomainError(w, err)
+		return
 	}
 
-	http.Redirect(w, r, "/admin/channels", http.StatusSeeOther)
+	channels, err := s.channelUseCase.ListChannels(r.Context())
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+
+	items := make([]ChannelItem, 0, len(channels))
+	for _, ch := range channels {
+		items = append(items, ChannelItem{
+			ChatID:          ch.ChatID,
+			Username:        ch.Username,
+			Title:           ch.Title,
+			MonitorProducts: ch.MonitorProducts,
+			MonitorCoupons:  ch.MonitorCoupons,
+			UpdatedAt:       ch.UpdatedAt,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"channels": items,
+	})
 }
 
-func (s *Server) handleAdminChannelsUpdatePost(w http.ResponseWriter, r *http.Request) {
-	lang := i18n.GetLanguage(r.Context())
-	_ = r.ParseForm()
-
-	channelIDs := r.PostForm["channel_ids"]
-	for _, idStr := range channelIDs {
-		chatID, err := strconv.ParseInt(idStr, 10, 64)
-		if err != nil {
-			continue
-		}
-		monitorProducts := r.PostFormValue("monitor_products_"+idStr) == "true"
-		monitorCoupons := r.PostFormValue("monitor_coupons_"+idStr) == "true"
-
-		_ = s.channelUseCase.UpdateChannelFlags(r.Context(), chatID, monitorProducts, monitorCoupons)
+func (s *Server) handleAdminChannelsUpdatePut(w http.ResponseWriter, r *http.Request) {
+	var req UpdateChannelsRequest
+	if err := readJSON(w, r, &req); err != nil {
+		writeErrorJSON(w, http.StatusBadRequest, "invalid_request", "invalid json body")
+		return
 	}
 
-	setFlash(w, "success", s.translator.T(lang, "msg_channels_updated"))
-	http.Redirect(w, r, "/admin/channels", http.StatusSeeOther)
+	for _, item := range req.Channels {
+		if err := s.channelUseCase.UpdateChannelFlags(r.Context(), item.ChatID, item.MonitorProducts, item.MonitorCoupons); err != nil {
+			writeDomainError(w, err)
+			return
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]bool{
+		"updated": true,
+	})
 }
 
 func (s *Server) handleAdminUsersGet(w http.ResponseWriter, r *http.Request) {
 	users, err := s.userAdminUseCase.ListUsers(r.Context())
 	if err != nil {
-		users = []*domain.User{}
+		writeDomainError(w, err)
+		return
 	}
 
-	s.render(w, r, "admin_users.html", ViewData{
-		Title:     s.translator.T(i18n.GetLanguage(r.Context()), "admin_u_title"),
-		ActiveNav: "users",
-		Data: UsersViewData{
-			Users: users,
-		},
-	})
+	items := make([]AdminUserItem, 0, len(users))
+	for _, u := range users {
+		interests, err := s.interestUseCase.ListUserInterests(r.Context(), u.ID)
+		activeCount := 0
+		if err == nil {
+			for _, in := range interests {
+				if in.Active {
+					activeCount++
+				}
+			}
+		}
+
+		items = append(items, AdminUserItem{
+			ID:                   u.ID,
+			Username:             u.Username,
+			Role:                 u.Role,
+			NtfyTopic:            u.NtfyTopic,
+			NormalizedNtfyTopic:  normalizeTopic(u.NtfyTopic, s.ntfyTopicSeparator),
+			ActiveInterestsCount: activeCount,
+			CreatedAt:            u.CreatedAt,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, items)
 }
 
 func (s *Server) handleAdminUsersCreatePost(w http.ResponseWriter, r *http.Request) {
-	lang := i18n.GetLanguage(r.Context())
-	username := strings.TrimSpace(r.PostFormValue("username"))
-	password := r.PostFormValue("password")
-	roleStr := r.PostFormValue("role")
-
-	role := domain.RoleUser
-	if roleStr == string(domain.RoleAdmin) {
-		role = domain.RoleAdmin
+	var req CreateUserRequest
+	if err := readJSON(w, r, &req); err != nil {
+		writeErrorJSON(w, http.StatusBadRequest, "invalid_request", "invalid json body")
+		return
 	}
 
-	user, err := s.userAdminUseCase.CreateUser(r.Context(), username, password, role)
+	role := domain.Role(req.Role)
+	if role == "" {
+		role = domain.RoleUser
+	}
+
+	user, err := s.userAdminUseCase.CreateUser(r.Context(), req.Username, req.Password, role)
 	if err != nil {
-		setFlash(w, "error", err.Error())
-	} else {
-		setFlash(w, "success", s.translator.T(lang, "msg_user_created", user.Username))
+		writeDomainError(w, err)
+		return
 	}
 
-	http.Redirect(w, r, "/admin/users", http.StatusSeeOther)
+	writeJSON(w, http.StatusCreated, AdminUserItem{
+		ID:                  user.ID,
+		Username:            user.Username,
+		Role:                user.Role,
+		NtfyTopic:           user.NtfyTopic,
+		NormalizedNtfyTopic: normalizeTopic(user.NtfyTopic, s.ntfyTopicSeparator),
+		CreatedAt:           user.CreatedAt,
+	})
 }
 
-func (s *Server) handleAdminUsersPasswordPost(w http.ResponseWriter, r *http.Request) {
-	lang := i18n.GetLanguage(r.Context())
+func (s *Server) handleAdminUsersPasswordPut(w http.ResponseWriter, r *http.Request) {
 	idStr := r.PathValue("id")
-	userID, err := strconv.ParseInt(idStr, 10, 64)
-	if err != nil {
-		http.Redirect(w, r, "/admin/users", http.StatusSeeOther)
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil || id <= 0 {
+		writeErrorJSON(w, http.StatusBadRequest, "invalid_id", "invalid user id")
 		return
 	}
 
-	password := r.PostFormValue("password")
-	err = s.userAdminUseCase.ResetUserPassword(r.Context(), userID, password)
-	if err != nil {
-		setFlash(w, "error", err.Error())
-	} else {
-		setFlash(w, "success", s.translator.T(lang, "msg_password_reset"))
+	var req ResetPasswordRequest
+	if err := readJSON(w, r, &req); err != nil {
+		writeErrorJSON(w, http.StatusBadRequest, "invalid_request", "invalid json body")
+		return
 	}
 
-	http.Redirect(w, r, "/admin/users", http.StatusSeeOther)
+	if req.Password == "" {
+		writeErrorJSON(w, http.StatusBadRequest, "invalid_request", "password is required")
+		return
+	}
+
+	if err := s.userAdminUseCase.ResetUserPassword(r.Context(), id, req.Password); err != nil {
+		writeDomainError(w, err)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) handleAdminUsersDeletePost(w http.ResponseWriter, r *http.Request) {
-	lang := i18n.GetLanguage(r.Context())
+func (s *Server) handleAdminUsersDelete(w http.ResponseWriter, r *http.Request) {
 	idStr := r.PathValue("id")
-	userID, err := strconv.ParseInt(idStr, 10, 64)
-	if err != nil {
-		http.Redirect(w, r, "/admin/users", http.StatusSeeOther)
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil || id <= 0 {
+		writeErrorJSON(w, http.StatusBadRequest, "invalid_id", "invalid user id")
 		return
 	}
 
-	currentUser := GetUser(r.Context())
-	if currentUser != nil && currentUser.ID == userID {
-		setFlash(w, "error", "Cannot delete your own administrator account")
-		http.Redirect(w, r, "/admin/users", http.StatusSeeOther)
+	currUser := GetUser(r.Context())
+	if currUser != nil && currUser.ID == id {
+		writeErrorJSON(w, http.StatusBadRequest, "cannot_delete_self", "cannot delete currently logged in account")
 		return
 	}
 
-	err = s.userAdminUseCase.DeleteUser(r.Context(), userID)
-	if err != nil {
-		setFlash(w, "error", err.Error())
-	} else {
-		setFlash(w, "success", s.translator.T(lang, "msg_user_deleted"))
+	if err := s.userAdminUseCase.DeleteUser(r.Context(), id); err != nil {
+		writeDomainError(w, err)
+		return
 	}
 
-	http.Redirect(w, r, "/admin/users", http.StatusSeeOther)
+	w.WriteHeader(http.StatusNoContent)
 }

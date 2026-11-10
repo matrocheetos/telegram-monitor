@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -518,3 +519,378 @@ func TestForeignKeyCascades(t *testing.T) {
 		t.Fatalf("expected 0 matches after cascade, got %d", matchCount)
 	}
 }
+
+func TestMigration002_CompositeIndexes(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db := newTestDB(t)
+
+	indexes := []string{
+		"idx_matched_products_created_id",
+		"idx_matched_products_user_created",
+		"idx_coupons_created_id",
+	}
+
+	for _, idx := range indexes {
+		var name string
+		err := db.QueryRowContext(ctx, "SELECT name FROM sqlite_master WHERE type='index' AND name=?", idx).Scan(&name)
+		if err != nil {
+			t.Fatalf("expected index %s to exist: %v", idx, err)
+		}
+		if name != idx {
+			t.Fatalf("expected index name %s, got %s", idx, name)
+		}
+	}
+}
+
+func TestMatchHistoryRepository_ListAndFilters(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db := newTestDB(t)
+
+	userRepo := sqlite.NewUserRepository(db)
+	channelRepo := sqlite.NewChannelRepository(db)
+	interestRepo := sqlite.NewInterestRepository(db)
+	matchRepo := sqlite.NewMatchHistoryRepository(db)
+
+	u1 := &domain.User{Username: "alice", PasswordHash: "h1", Role: domain.RoleUser, NtfyTopic: "promo-user-alice"}
+	if err := userRepo.CreateUser(ctx, u1); err != nil {
+		t.Fatalf("CreateUser u1 failed: %v", err)
+	}
+	u2 := &domain.User{Username: "bob", PasswordHash: "h2", Role: domain.RoleUser, NtfyTopic: "promo-user-bob"}
+	if err := userRepo.CreateUser(ctx, u2); err != nil {
+		t.Fatalf("CreateUser u2 failed: %v", err)
+	}
+
+	ch := &domain.TelegramChannel{
+		ChatID:   -1001111222,
+		Title:    "Promos Tech",
+		Username: "promostech",
+	}
+	if err := channelRepo.UpsertChannel(ctx, ch); err != nil {
+		t.Fatalf("UpsertChannel failed: %v", err)
+	}
+
+	interest := &domain.UserInterest{
+		UserID:         u1.ID,
+		RawTerm:        "RTX 4060",
+		PositiveTokens: []string{"rtx", "4060"},
+		NegativeTokens: []string{},
+		Active:         true,
+	}
+	if err := interestRepo.CreateInterest(ctx, interest); err != nil {
+		t.Fatalf("CreateInterest failed: %v", err)
+	}
+
+	price1 := 1899.90
+	price2 := 1950.00
+
+	if err := matchRepo.RecordProductMatch(ctx, u1.ID, &interest.ID, ch.ChatID, &price1, "RTX 4060 8GB em promo https://amzn.to/abc"); err != nil {
+		t.Fatalf("RecordProductMatch 1 failed: %v", err)
+	}
+	time.Sleep(10 * time.Millisecond)
+	if err := matchRepo.RecordProductMatch(ctx, u1.ID, &interest.ID, ch.ChatID, &price2, "Outra RTX 4060 Ti na loja https://kabum.com.br/123"); err != nil {
+		t.Fatalf("RecordProductMatch 2 failed: %v", err)
+	}
+	// Match for bob
+	if err := matchRepo.RecordProductMatch(ctx, u2.ID, nil, ch.ChatID, nil, "Bob RTX deal https://meli.la/xyz"); err != nil {
+		t.Fatalf("RecordProductMatch bob failed: %v", err)
+	}
+
+	// 1. List for Alice - should return 2 items, newest first
+	aliceMatches, total, err := matchRepo.ListUserMatchedProducts(ctx, u1.ID, "", 10, 0)
+	if err != nil {
+		t.Fatalf("ListUserMatchedProducts alice failed: %v", err)
+	}
+	if total != 2 {
+		t.Fatalf("expected total 2 for alice, got %d", total)
+	}
+	if len(aliceMatches) != 2 {
+		t.Fatalf("expected 2 items for alice, got %d", len(aliceMatches))
+	}
+	if aliceMatches[0].ExtractedPrice == nil || *aliceMatches[0].ExtractedPrice != price2 {
+		t.Fatalf("expected newest match price %f, got %v", price2, aliceMatches[0].ExtractedPrice)
+	}
+	if aliceMatches[0].ChannelTitle != "Promos Tech" {
+		t.Fatalf("expected channel title 'Promos Tech', got '%s'", aliceMatches[0].ChannelTitle)
+	}
+	if aliceMatches[0].InterestTerm != "RTX 4060" {
+		t.Fatalf("expected interest term 'RTX 4060', got '%s'", aliceMatches[0].InterestTerm)
+	}
+	if aliceMatches[0].OfferURL != "https://kabum.com.br/123" {
+		t.Fatalf("expected OfferURL https://kabum.com.br/123, got '%s'", aliceMatches[0].OfferURL)
+	}
+
+	// 2. Search query filter
+	filteredMatches, filteredTotal, err := matchRepo.ListUserMatchedProducts(ctx, u1.ID, "kabum", 10, 0)
+	if err != nil {
+		t.Fatalf("ListUserMatchedProducts search failed: %v", err)
+	}
+	if filteredTotal != 1 || len(filteredMatches) != 1 {
+		t.Fatalf("expected 1 match for search 'kabum', got total=%d len=%d", filteredTotal, len(filteredMatches))
+	}
+
+	// 3. User isolation check
+	bobMatches, bobTotal, err := matchRepo.ListUserMatchedProducts(ctx, u2.ID, "", 10, 0)
+	if err != nil {
+		t.Fatalf("ListUserMatchedProducts bob failed: %v", err)
+	}
+	if bobTotal != 1 || len(bobMatches) != 1 {
+		t.Fatalf("expected 1 match for bob, got total=%d len=%d", bobTotal, len(bobMatches))
+	}
+	if bobMatches[0].InterestTerm != "Termo Removido" {
+		t.Fatalf("expected fallback 'Termo Removido' for nil interest, got '%s'", bobMatches[0].InterestTerm)
+	}
+}
+
+func TestMatchHistoryRepository_RetentionPruning(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db := newTestDB(t)
+
+	userRepo := sqlite.NewUserRepository(db)
+	matchRepo := sqlite.NewMatchHistoryRepository(db)
+
+	u := &domain.User{Username: "retention_user", PasswordHash: "h", Role: domain.RoleUser, NtfyTopic: "promo-user-retention"}
+	if err := userRepo.CreateUser(ctx, u); err != nil {
+		t.Fatalf("CreateUser failed: %v", err)
+	}
+
+	// Insert 5 records older than 90 days and 3 recent records directly
+	oldDate := time.Now().UTC().AddDate(0, 0, -100)
+	recentDate := time.Now().UTC().AddDate(0, 0, -5)
+
+	for i := 1; i <= 5; i++ {
+		_, err := db.ExecContext(ctx, `
+			INSERT INTO matched_products (user_id, channel_id, message_text, created_at)
+			VALUES (?, ?, ?, ?)
+		`, u.ID, -100, fmt.Sprintf("old item %d", i), oldDate.Add(time.Duration(i)*time.Minute))
+		if err != nil {
+			t.Fatalf("insert old item failed: %v", err)
+		}
+	}
+
+	for i := 1; i <= 3; i++ {
+		_, err := db.ExecContext(ctx, `
+			INSERT INTO matched_products (user_id, channel_id, message_text, created_at)
+			VALUES (?, ?, ?, ?)
+		`, u.ID, -100, fmt.Sprintf("recent item %d", i), recentDate.Add(time.Duration(i)*time.Minute))
+		if err != nil {
+			t.Fatalf("insert recent item failed: %v", err)
+		}
+	}
+
+	count, err := matchRepo.CountTotal(ctx)
+	if err != nil {
+		t.Fatalf("CountTotal failed: %v", err)
+	}
+	if count != 8 {
+		t.Fatalf("expected initial count 8, got %d", count)
+	}
+
+	// 1. Batch prune older than 90 days in batches of 2
+	cutoff := time.Now().UTC().AddDate(0, 0, -90)
+	deleted1, err := matchRepo.PruneOlderThan(ctx, cutoff, 2)
+	if err != nil {
+		t.Fatalf("PruneOlderThan batch 1 failed: %v", err)
+	}
+	if deleted1 != 2 {
+		t.Fatalf("expected 2 rows pruned in batch 1, got %d", deleted1)
+	}
+
+	deleted2, err := matchRepo.PruneOlderThan(ctx, cutoff, 2)
+	if err != nil {
+		t.Fatalf("PruneOlderThan batch 2 failed: %v", err)
+	}
+	if deleted2 != 2 {
+		t.Fatalf("expected 2 rows pruned in batch 2, got %d", deleted2)
+	}
+
+	deleted3, err := matchRepo.PruneOlderThan(ctx, cutoff, 2)
+	if err != nil {
+		t.Fatalf("PruneOlderThan batch 3 failed: %v", err)
+	}
+	if deleted3 != 1 {
+		t.Fatalf("expected 1 remaining row pruned in batch 3, got %d", deleted3)
+	}
+
+	deleted4, err := matchRepo.PruneOlderThan(ctx, cutoff, 2)
+	if err != nil {
+		t.Fatalf("PruneOlderThan batch 4 failed: %v", err)
+	}
+	if deleted4 != 0 {
+		t.Fatalf("expected 0 rows pruned in batch 4, got %d", deleted4)
+	}
+
+	// Remaining should be exactly the 3 recent records
+	count, err = matchRepo.CountTotal(ctx)
+	if err != nil {
+		t.Fatalf("CountTotal after age pruning failed: %v", err)
+	}
+	if count != 3 {
+		t.Fatalf("expected 3 remaining records, got %d", count)
+	}
+
+	// 2. Test PruneExcessAbove
+	// Insert 7 more recent items to reach 10 items
+	for i := 4; i <= 10; i++ {
+		_, err := db.ExecContext(ctx, `
+			INSERT INTO matched_products (user_id, channel_id, message_text, created_at)
+			VALUES (?, ?, ?, ?)
+		`, u.ID, -100, fmt.Sprintf("recent item %d", i), recentDate.Add(time.Duration(i)*time.Minute))
+		if err != nil {
+			t.Fatalf("insert additional item failed: %v", err)
+		}
+	}
+
+	count, _ = matchRepo.CountTotal(ctx)
+	if count != 10 {
+		t.Fatalf("expected 10 records, got %d", count)
+	}
+
+	// Ceiling = 6, batchSize = 2 -> prunes 2 oldest
+	pruned, err := matchRepo.PruneExcessAbove(ctx, 6, 2)
+	if err != nil {
+		t.Fatalf("PruneExcessAbove batch 1 failed: %v", err)
+	}
+	if pruned != 2 {
+		t.Fatalf("expected 2 pruned, got %d", pruned)
+	}
+
+	// Ceiling = 6, batchSize = 2 -> prunes remaining 2 excess
+	pruned, err = matchRepo.PruneExcessAbove(ctx, 6, 2)
+	if err != nil {
+		t.Fatalf("PruneExcessAbove batch 2 failed: %v", err)
+	}
+	if pruned != 2 {
+		t.Fatalf("expected 2 pruned, got %d", pruned)
+	}
+
+	// Now count should be 6
+	count, _ = matchRepo.CountTotal(ctx)
+	if count != 6 {
+		t.Fatalf("expected 6 records remaining, got %d", count)
+	}
+
+	// Next call should prune 0
+	pruned, err = matchRepo.PruneExcessAbove(ctx, 6, 2)
+	if err != nil {
+		t.Fatalf("PruneExcessAbove noop failed: %v", err)
+	}
+	if pruned != 0 {
+		t.Fatalf("expected 0 pruned when count <= maxKeep, got %d", pruned)
+	}
+}
+
+func TestCouponRepository_ListAndFilters(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db := newTestDB(t)
+
+	channelRepo := sqlite.NewChannelRepository(db)
+	couponRepo := sqlite.NewCouponRepository(db)
+
+	ch := &domain.TelegramChannel{
+		ChatID:   -100999888,
+		Title:    "Canal Cupons",
+		Username: "canalcupons",
+	}
+	if err := channelRepo.UpsertChannel(ctx, ch); err != nil {
+		t.Fatalf("UpsertChannel failed: %v", err)
+	}
+
+	if err := couponRepo.RecordCoupon(ctx, "AMAZON10", "Amazon", "https://amazon.com.br", ch.ChatID, "10% off em livros"); err != nil {
+		t.Fatalf("RecordCoupon 1 failed: %v", err)
+	}
+	time.Sleep(10 * time.Millisecond)
+	if err := couponRepo.RecordCoupon(ctx, "MAGALU20", "Magalu", "https://magalu.com", ch.ChatID, "20 reais de desconto no app"); err != nil {
+		t.Fatalf("RecordCoupon 2 failed: %v", err)
+	}
+
+	// List all
+	coupons, total, err := couponRepo.ListExtractedCoupons(ctx, "", 10, 0)
+	if err != nil {
+		t.Fatalf("ListExtractedCoupons failed: %v", err)
+	}
+	if total != 2 || len(coupons) != 2 {
+		t.Fatalf("expected 2 coupons, got total=%d len=%d", total, len(coupons))
+	}
+	if coupons[0].Code != "MAGALU20" {
+		t.Fatalf("expected newest coupon MAGALU20 first, got %s", coupons[0].Code)
+	}
+	if coupons[0].ChannelTitle != "Canal Cupons" {
+		t.Fatalf("expected channel title 'Canal Cupons', got '%s'", coupons[0].ChannelTitle)
+	}
+
+	// Filter by code
+	filtered, totalFiltered, err := couponRepo.ListExtractedCoupons(ctx, "AMAZON", 10, 0)
+	if err != nil {
+		t.Fatalf("ListExtractedCoupons search failed: %v", err)
+	}
+	if totalFiltered != 1 || len(filtered) != 1 || filtered[0].Code != "AMAZON10" {
+		t.Fatalf("unexpected filtered coupons: %+v", filtered)
+	}
+}
+
+func TestCouponRepository_RetentionPruning(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db := newTestDB(t)
+
+	couponRepo := sqlite.NewCouponRepository(db)
+
+	oldDate := time.Now().UTC().AddDate(0, 0, -95)
+	recentDate := time.Now().UTC().AddDate(0, 0, -2)
+
+	for i := 1; i <= 4; i++ {
+		_, err := db.ExecContext(ctx, `
+			INSERT INTO coupons (code, store_name, store_url, channel_id, message_text, created_at)
+			VALUES (?, ?, ?, ?, ?, ?)
+		`, fmt.Sprintf("OLD%d", i), "Store", "https://store.com", -100, "text", oldDate.Add(time.Duration(i)*time.Minute))
+		if err != nil {
+			t.Fatalf("insert old coupon failed: %v", err)
+		}
+	}
+
+	for i := 1; i <= 3; i++ {
+		_, err := db.ExecContext(ctx, `
+			INSERT INTO coupons (code, store_name, store_url, channel_id, message_text, created_at)
+			VALUES (?, ?, ?, ?, ?, ?)
+		`, fmt.Sprintf("REC%d", i), "Store", "https://store.com", -100, "text", recentDate.Add(time.Duration(i)*time.Minute))
+		if err != nil {
+			t.Fatalf("insert recent coupon failed: %v", err)
+		}
+	}
+
+	cutoff := time.Now().UTC().AddDate(0, 0, -90)
+	deleted, err := couponRepo.PruneOlderThan(ctx, cutoff, 10)
+	if err != nil {
+		t.Fatalf("PruneOlderThan failed: %v", err)
+	}
+	if deleted != 4 {
+		t.Fatalf("expected 4 deleted, got %d", deleted)
+	}
+
+	total, err := couponRepo.CountTotal(ctx)
+	if err != nil {
+		t.Fatalf("CountTotal failed: %v", err)
+	}
+	if total != 3 {
+		t.Fatalf("expected 3 remaining, got %d", total)
+	}
+
+	// Prune ceiling test
+	pruned, err := couponRepo.PruneExcessAbove(ctx, 2, 10)
+	if err != nil {
+		t.Fatalf("PruneExcessAbove failed: %v", err)
+	}
+	if pruned != 1 {
+		t.Fatalf("expected 1 pruned, got %d", pruned)
+	}
+
+	total, _ = couponRepo.CountTotal(ctx)
+	if total != 2 {
+		t.Fatalf("expected 2 coupons left, got %d", total)
+	}
+}
+

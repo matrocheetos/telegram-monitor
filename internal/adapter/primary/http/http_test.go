@@ -1,17 +1,18 @@
 package http_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"testing"
 	"time"
 
 	adapterHTTP "github.com/matrocheetos/telegram-monitor/internal/adapter/primary/http"
-	"github.com/matrocheetos/telegram-monitor/internal/adapter/primary/http/i18n"
 	"github.com/matrocheetos/telegram-monitor/internal/domain"
 )
 
@@ -51,6 +52,9 @@ func (m *mockAuthUseCase) Login(ctx context.Context, username, password string) 
 	if m.loginErr != nil {
 		return nil, "", m.loginErr
 	}
+	if password == "wrongpassword" {
+		return nil, "", domain.ErrInvalidCredentials
+	}
 	user, ok := m.users[username]
 	if !ok {
 		return nil, "", domain.ErrInvalidCredentials
@@ -84,6 +88,7 @@ func (m *mockUserAdminUseCase) CreateUser(ctx context.Context, username, passwor
 		Username:  username,
 		Role:      role,
 		NtfyTopic: "promo/user/" + username,
+		CreatedAt: time.Now(),
 	}
 	m.users = append(m.users, u)
 	return u, nil
@@ -173,6 +178,8 @@ func (m *mockInterestUseCase) AddInterest(ctx context.Context, userID int64, raw
 		return nil, err
 	}
 	interest.ID = int64(len(m.interests[userID]) + 1)
+	interest.Active = true
+	interest.CreatedAt = time.Now()
 	m.interests[userID] = append(m.interests[userID], interest)
 	return interest, nil
 }
@@ -193,6 +200,62 @@ func (m *mockInterestUseCase) DeleteInterest(ctx context.Context, userID, intere
 	return nil
 }
 
+type mockOfferHistoryUseCase struct {
+	matchedProducts map[int64][]domain.UserMatchedProduct
+	coupons         []domain.ExtractedCoupon
+}
+
+func (m *mockOfferHistoryUseCase) ListUserMatchedProducts(ctx context.Context, userID int64, searchQuery string, limit, offset int) ([]domain.UserMatchedProduct, int, error) {
+	all := m.matchedProducts[userID]
+	var filtered []domain.UserMatchedProduct
+	query := strings.ToLower(searchQuery)
+	for _, p := range all {
+		if query == "" ||
+			strings.Contains(strings.ToLower(p.MessageText), query) ||
+			strings.Contains(strings.ToLower(p.InterestTerm), query) ||
+			strings.Contains(strings.ToLower(p.ChannelTitle), query) ||
+			strings.Contains(strings.ToLower(p.ChannelHandle), query) {
+			filtered = append(filtered, p)
+		}
+	}
+	total := len(filtered)
+	if offset > len(filtered) {
+		return nil, total, nil
+	}
+	end := offset + limit
+	if end > len(filtered) {
+		end = len(filtered)
+	}
+	return filtered[offset:end], total, nil
+}
+
+func (m *mockOfferHistoryUseCase) ListExtractedCoupons(ctx context.Context, searchQuery string, limit, offset int) ([]domain.ExtractedCoupon, int, error) {
+	var filtered []domain.ExtractedCoupon
+	query := strings.ToLower(searchQuery)
+	for _, c := range m.coupons {
+		if query == "" ||
+			strings.Contains(strings.ToLower(c.Code), query) ||
+			strings.Contains(strings.ToLower(c.StoreName), query) ||
+			strings.Contains(strings.ToLower(c.MessageText), query) ||
+			strings.Contains(strings.ToLower(c.ChannelTitle), query) {
+			filtered = append(filtered, c)
+		}
+	}
+	total := len(filtered)
+	if offset > len(filtered) {
+		return nil, total, nil
+	}
+	end := offset + limit
+	if end > len(filtered) {
+		end = len(filtered)
+	}
+	return filtered[offset:end], total, nil
+}
+
+func (m *mockOfferHistoryUseCase) RunRetentionCleanup(ctx context.Context) error {
+	return nil
+}
+
 type testFixture struct {
 	server       *adapterHTTP.Server
 	setupUC      *mockSetupUseCase
@@ -201,19 +264,19 @@ type testFixture struct {
 	tgAuthUC     *mockTelegramAuthUseCase
 	channelUC    *mockChannelUseCase
 	interestUC   *mockInterestUseCase
-	translator   *i18n.Translator
+	offerUC      *mockOfferHistoryUseCase
 	regularUser  *domain.User
 	adminUser    *domain.User
 	regularToken string
 	adminToken   string
 }
 
+func ptr[T any](v T) *T {
+	return &v
+}
+
 func setupFixture(t *testing.T, needsSetup bool, tgConnected bool) *testFixture {
 	t.Helper()
-	tr, err := i18n.NewTranslator()
-	if err != nil {
-		t.Fatalf("failed to create translator: %v", err)
-	}
 
 	adminUser := &domain.User{
 		ID:        1,
@@ -237,8 +300,8 @@ func setupFixture(t *testing.T, needsSetup bool, tgConnected bool) *testFixture 
 			"mateus": regUser,
 		},
 		sessions: map[string]*domain.User{
-			"admin-session":   adminUser,
-			"regular-session": regUser,
+			"admin-session-token": adminUser,
+			"user-session-token":  regUser,
 		},
 	}
 	userAdminUC := &mockUserAdminUseCase{
@@ -250,19 +313,74 @@ func setupFixture(t *testing.T, needsSetup bool, tgConnected bool) *testFixture 
 	}
 	channelUC := &mockChannelUseCase{
 		channels: []*domain.TelegramChannel{
-			{ChatID: -1001, Title: "Ofertas BR", MonitorProducts: true, MonitorCoupons: true},
-			{ChatID: -1002, Title: "Cupons Only", MonitorProducts: false, MonitorCoupons: true},
+			{
+				ChatID:          1001,
+				Title:           "Canal Ofertas",
+				Username:        "canalofertas",
+				MonitorProducts: true,
+				MonitorCoupons:  false,
+				UpdatedAt:       time.Now(),
+			},
+			{
+				ChatID:          1002,
+				Title:           "Canal Cupons",
+				Username:        "canalcupons",
+				MonitorProducts: false,
+				MonitorCoupons:  true,
+				UpdatedAt:       time.Now(),
+			},
 		},
 	}
 	interestUC := &mockInterestUseCase{
-		interests: make(map[int64][]*domain.UserInterest),
+		interests: map[int64][]*domain.UserInterest{
+			2: {
+				{
+					ID:             1,
+					UserID:         2,
+					RawTerm:        "switch oled",
+					PositiveTokens: []string{"switch", "oled"},
+					Active:         true,
+					CreatedAt:      time.Now(),
+				},
+			},
+		},
+	}
+	offerUC := &mockOfferHistoryUseCase{
+		matchedProducts: map[int64][]domain.UserMatchedProduct{
+			2: {
+				{
+					ID:             1,
+					UserID:         2,
+					InterestTerm:   "switch oled",
+					ChannelTitle:   "Canal Ofertas",
+					ChannelHandle:  "canalofertas",
+					ExtractedPrice: ptr(1999.99),
+					MessageText:    "Console Nintendo Switch OLED",
+					OfferURL:       "https://amzn.to/test",
+					CreatedAt:      time.Now(),
+				},
+			},
+		},
+		coupons: []domain.ExtractedCoupon{
+			{
+				ID:            1,
+				Code:          "DESCONTO10",
+				StoreName:     "Amazon",
+				StoreURL:      "https://amazon.com.br",
+				MessageText:   "Cupom 10% OFF: DESCONTO10",
+				ChannelTitle:  "Canal Cupons",
+				ChannelHandle: "canalcupons",
+				CreatedAt:     time.Now(),
+			},
+		},
 	}
 
 	server, err := adapterHTTP.NewServer(
 		adapterHTTP.Config{
 			Port:               8080,
-			NtfyURL:            "https://ntfy.example.com",
+			NtfyURL:            "https://ntfy.sh",
 			NtfyTopicSeparator: "-",
+			CORSAllowedOrigins: "http://localhost:5173",
 		},
 		setupUC,
 		authUC,
@@ -270,7 +388,7 @@ func setupFixture(t *testing.T, needsSetup bool, tgConnected bool) *testFixture 
 		tgAuthUC,
 		channelUC,
 		interestUC,
-		tr,
+		offerUC,
 	)
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
@@ -284,468 +402,505 @@ func setupFixture(t *testing.T, needsSetup bool, tgConnected bool) *testFixture 
 		tgAuthUC:     tgAuthUC,
 		channelUC:    channelUC,
 		interestUC:   interestUC,
-		translator:   tr,
+		offerUC:      offerUC,
 		regularUser:  regUser,
 		adminUser:    adminUser,
-		regularToken: "regular-session",
-		adminToken:   adminTokenFromSession,
+		regularToken: "user-session-token",
+		adminToken:   "admin-session-token",
 	}
 }
 
-const adminTokenFromSession = "admin-session"
-
-func getCSRFTokenFromResponse(resp *http.Response) string {
-	for _, c := range resp.Cookies() {
-		if c.Name == "csrf_token" {
-			return c.Value
-		}
+//nolint:gosec // test helper creates mock session cookie
+func newSessionCookie(val string) *http.Cookie {
+	return &http.Cookie{
+		Name:     "session_id",
+		Value:    val,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
 	}
-	return ""
 }
 
-func TestFirstBootScenario(t *testing.T) {
-	fix := setupFixture(t, true, false)
+//nolint:gosec // test helper creates mock csrf cookie
+func newCSRFCookie(val string) *http.Cookie {
+	return &http.Cookie{
+		Name:     "csrf_token",
+		Value:    val,
+		Path:     "/",
+		HttpOnly: false,
+		SameSite: http.SameSiteLaxMode,
+	}
+}
+
+func newJSONRequest(ctx context.Context, method, target string, body any, sessionCookie *http.Cookie, csrfToken string) *http.Request {
+	var bodyReader io.Reader
+	if body != nil {
+		b, _ := json.Marshal(body)
+		bodyReader = bytes.NewReader(b)
+	}
+	req := httptest.NewRequestWithContext(ctx, method, target, bodyReader)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if sessionCookie != nil {
+		req.AddCookie(sessionCookie)
+	}
+	if csrfToken != "" {
+		req.AddCookie(newCSRFCookie(csrfToken))
+		req.Header.Set("X-CSRF-Token", csrfToken)
+	}
+	return req
+}
+
+func TestHealth(t *testing.T) {
 	ctx := context.Background()
-
-	// 1. Root and protected routes redirect to /setup
-	req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/", nil)
-	w := httptest.NewRecorder()
-	fix.server.ServeHTTP(w, req)
-	resp := w.Result()
-	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/setup" {
-		t.Errorf("expected 303 to /setup, got status %d loc %s", resp.StatusCode, resp.Header.Get("Location"))
-	}
-
-	req = httptest.NewRequestWithContext(ctx, http.MethodGet, "/dashboard", nil)
-	w = httptest.NewRecorder()
-	fix.server.ServeHTTP(w, req)
-	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/setup" {
-		t.Errorf("dashboard should redirect to /setup on first boot")
-	}
-
-	// 2. Static files should be served normally
-	req = httptest.NewRequestWithContext(ctx, http.MethodGet, "/static/style.css", nil)
-	w = httptest.NewRecorder()
-	fix.server.ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Errorf("expected 200 for static style.css, got %d", w.Code)
-	}
-
-	// 3. GET /setup should return 200 and set csrf_token cookie
-	req = httptest.NewRequestWithContext(ctx, http.MethodGet, "/setup", nil)
-	w = httptest.NewRecorder()
-	fix.server.ServeHTTP(w, req)
-	resp = w.Result()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 for /setup, got %d", resp.StatusCode)
-	}
-	csrf := getCSRFTokenFromResponse(resp)
-	if csrf == "" {
-		t.Fatalf("expected csrf_token cookie to be set")
-	}
-
-	// 4. POST /setup with password mismatch -> redirects to /setup
-	form := url.Values{
-		"csrf_token":       {csrf},
-		"username":         {"admin"},
-		"password":         {"adminpassword123"},
-		"password_confirm": {"differentpassword"},
-	}
-	req = httptest.NewRequestWithContext(ctx, http.MethodPost, "/setup", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	//nolint:gosec // test cookie
-	req.AddCookie(&http.Cookie{Name: "csrf_token", Value: csrf})
-	w = httptest.NewRecorder()
-	fix.server.ServeHTTP(w, req)
-	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/setup" {
-		t.Errorf("expected redirect to /setup on password mismatch, got %d loc %s", w.Code, w.Header().Get("Location"))
-	}
-
-	// 5. POST /setup with matching passwords -> creates admin and redirects to /admin/telegram
-	form.Set("password_confirm", "adminpassword123")
-	req = httptest.NewRequestWithContext(ctx, http.MethodPost, "/setup", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	//nolint:gosec // test cookie
-	req.AddCookie(&http.Cookie{Name: "csrf_token", Value: csrf})
-	w = httptest.NewRecorder()
-	fix.server.ServeHTTP(w, req)
-	resp = w.Result()
-	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/admin/telegram" {
-		t.Errorf("expected redirect to /admin/telegram, got %d loc %s", resp.StatusCode, resp.Header.Get("Location"))
-	}
-}
-
-func TestAnonymousAndSetupCompleted(t *testing.T) {
-	fix := setupFixture(t, false, false)
-	ctx := context.Background()
-
-	// 1. GET /setup when setup is completed redirects to /login
-	req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/setup", nil)
-	w := httptest.NewRecorder()
-	fix.server.ServeHTTP(w, req)
-	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/login" {
-		t.Errorf("expected redirect to /login from /setup, got %d loc %s", w.Code, w.Header().Get("Location"))
-	}
-
-	// 2. POST /setup when setup is completed returns 403 Forbidden
-	req = httptest.NewRequestWithContext(ctx, http.MethodGet, "/login", nil)
-	w = httptest.NewRecorder()
-	fix.server.ServeHTTP(w, req)
-	csrf := getCSRFTokenFromResponse(w.Result())
-
-	form := url.Values{
-		"csrf_token":       {csrf},
-		"username":         {"admin"},
-		"password":         {"pass123456"},
-		"password_confirm": {"pass123456"},
-	}
-	req = httptest.NewRequestWithContext(ctx, http.MethodPost, "/setup", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	//nolint:gosec // test cookie
-	req.AddCookie(&http.Cookie{Name: "csrf_token", Value: csrf})
-	w = httptest.NewRecorder()
-	fix.server.ServeHTTP(w, req)
-	if w.Code != http.StatusForbidden {
-		t.Errorf("expected 403 Forbidden for POST /setup after completion, got %d", w.Code)
-	}
-
-	// 3. Protected routes redirect to /login
-	protected := []string{"/dashboard", "/admin/telegram", "/admin/channels", "/admin/users"}
-	for _, path := range protected {
-		req = httptest.NewRequestWithContext(ctx, http.MethodGet, path, nil)
-		w = httptest.NewRecorder()
-		fix.server.ServeHTTP(w, req)
-		if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/login" {
-			t.Errorf("path %s should redirect to /login for anon, got %d", path, w.Code)
-		}
-	}
-
-	// 4. POST /login with invalid credentials
-	formLogin := url.Values{
-		"csrf_token": {csrf},
-		"username":   {"invaliduser"},
-		"password":   {"wrongpassword"},
-	}
-	req = httptest.NewRequestWithContext(ctx, http.MethodPost, "/login", strings.NewReader(formLogin.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	//nolint:gosec // test cookie
-	req.AddCookie(&http.Cookie{Name: "csrf_token", Value: csrf})
-	w = httptest.NewRecorder()
-	fix.server.ServeHTTP(w, req)
-	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/login" {
-		t.Errorf("expected redirect to /login on failed login, got %d", w.Code)
-	}
-
-	// 5. POST /login with valid admin credentials (without telegram session) -> redirects to /admin/telegram
-	formLogin.Set("username", "admin")
-	formLogin.Set("password", "correctpass")
-	req = httptest.NewRequestWithContext(ctx, http.MethodPost, "/login", strings.NewReader(formLogin.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	//nolint:gosec // test cookie
-	req.AddCookie(&http.Cookie{Name: "csrf_token", Value: csrf})
-	w = httptest.NewRecorder()
-	fix.server.ServeHTTP(w, req)
-	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/admin/telegram" {
-		t.Errorf("expected admin without telegram to redirect to /admin/telegram, got %d loc %s", w.Code, w.Header().Get("Location"))
-	}
-}
-
-func TestRegularUserRoleRBAC(t *testing.T) {
 	fix := setupFixture(t, false, true)
+
+	req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/api/v1/health", nil)
+	rec := httptest.NewRecorder()
+	fix.server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	var resp map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to decode json: %v", err)
+	}
+	if resp["status"] != "ok" {
+		t.Fatalf("expected status ok, got %v", resp["status"])
+	}
+}
+
+func TestFirstBootGuard(t *testing.T) {
 	ctx := context.Background()
+	fix := setupFixture(t, true, false)
 
-	// User session cookie
-	//nolint:gosec // test cookie
-	userCookie := &http.Cookie{Name: "session_id", Value: fix.regularToken}
+	// 1. Session check on first boot
+	req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/api/v1/auth/session", nil)
+	rec := httptest.NewRecorder()
+	fix.server.ServeHTTP(rec, req)
 
-	// 1. Dashboard is accessible
-	req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/dashboard", nil)
-	req.AddCookie(userCookie)
-	w := httptest.NewRecorder()
-	fix.server.ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200 for user /dashboard, got %d", w.Code)
-	}
-	csrf := getCSRFTokenFromResponse(w.Result())
-
-	// 2. Add interest
-	formInterest := url.Values{
-		"csrf_token": {csrf},
-		"term":       {"Nintendo Switch 2 -case"},
-		"max_price":  {"2500.00"},
-	}
-	req = httptest.NewRequestWithContext(ctx, http.MethodPost, "/interests", strings.NewReader(formInterest.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.AddCookie(userCookie)
-	//nolint:gosec // test cookie
-	req.AddCookie(&http.Cookie{Name: "csrf_token", Value: csrf})
-	w = httptest.NewRecorder()
-	fix.server.ServeHTTP(w, req)
-	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/dashboard" {
-		t.Errorf("expected redirect to /dashboard after adding interest, got %d", w.Code)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
 	}
 
-	if len(fix.interestUC.interests[fix.regularUser.ID]) != 1 {
-		t.Errorf("expected 1 interest added, got %d", len(fix.interestUC.interests[fix.regularUser.ID]))
+	var sessionResp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &sessionResp); err != nil {
+		t.Fatalf("decode session json: %v", err)
+	}
+	if sessionResp["needsInitialSetup"] != true {
+		t.Fatalf("expected needsInitialSetup=true, got %v", sessionResp["needsInitialSetup"])
+	}
+	csrfToken, ok := sessionResp["csrfToken"].(string)
+	if !ok || csrfToken == "" {
+		t.Fatalf("expected csrfToken string, got %v", sessionResp["csrfToken"])
 	}
 
-	// 3. Admin routes must return 403 Forbidden for role: user
-	adminPaths := []string{
-		"/admin/telegram",
-		"/admin/channels",
-		"/admin/users",
+	// 2. Access to any other route without setup returns 403 setup_required
+	otherReq := httptest.NewRequestWithContext(ctx, http.MethodGet, "/api/v1/dashboard", nil)
+	otherRec := httptest.NewRecorder()
+	fix.server.ServeHTTP(otherRec, otherReq)
+	if otherRec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 on unconfigured dashboard, got %d", otherRec.Code)
 	}
-	for _, p := range adminPaths {
-		req = httptest.NewRequestWithContext(ctx, http.MethodGet, p, nil)
-		req.AddCookie(userCookie)
-		w = httptest.NewRecorder()
-		fix.server.ServeHTTP(w, req)
-		if w.Code != http.StatusForbidden {
-			t.Errorf("expected 403 Forbidden for user on %s, got %d", p, w.Code)
+
+	// 3. Setup with password mismatch
+	badSetupReq := newJSONRequest(ctx, http.MethodPost, "/api/v1/setup", map[string]string{
+		"username":        "admin",
+		"password":        "password123",
+		"passwordConfirm": "different123",
+	}, nil, csrfToken)
+	badSetupRec := httptest.NewRecorder()
+	fix.server.ServeHTTP(badSetupRec, badSetupReq)
+	if badSetupRec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 on password mismatch, got %d", badSetupRec.Code)
+	}
+
+	// 4. Setup with valid passwords -> 201 Created
+	setupReq := newJSONRequest(ctx, http.MethodPost, "/api/v1/setup", map[string]string{
+		"username":        "admin",
+		"password":        "password123",
+		"passwordConfirm": "password123",
+	}, nil, csrfToken)
+	setupRec := httptest.NewRecorder()
+	fix.server.ServeHTTP(setupRec, setupReq)
+
+	if setupRec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", setupRec.Code, setupRec.Body.String())
+	}
+
+	// Verify session cookie was set
+	cookies := setupRec.Result().Cookies()
+	var sessionCookie *http.Cookie
+	for _, c := range cookies {
+		if c.Name == "session_id" {
+			sessionCookie = c
+			break
 		}
+	}
+	if sessionCookie == nil {
+		t.Fatalf("expected session_id cookie to be set")
+	}
+
+	// 5. Subsequent call to setup returns 403 setup_already_completed
+	postSetupReq := newJSONRequest(ctx, http.MethodPost, "/api/v1/setup", map[string]string{
+		"username":        "admin2",
+		"password":        "password123",
+		"passwordConfirm": "password123",
+	}, nil, csrfToken)
+	postSetupRec := httptest.NewRecorder()
+	fix.server.ServeHTTP(postSetupRec, postSetupReq)
+	if postSetupRec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 on setup already completed, got %d", postSetupRec.Code)
+	}
+}
+
+func TestAuthWorkflow(t *testing.T) {
+	ctx := context.Background()
+	fix := setupFixture(t, false, true)
+
+	//nolint:gosec // dummy token for testing
+	csrfToken := "test-csrf-token"
+
+	// 1. Invalid login
+	badLoginReq := newJSONRequest(ctx, http.MethodPost, "/api/v1/auth/login", map[string]string{
+		"username": "admin",
+		"password": "wrongpassword",
+	}, nil, csrfToken)
+	badLoginRec := httptest.NewRecorder()
+	fix.server.ServeHTTP(badLoginRec, badLoginReq)
+	if badLoginRec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", badLoginRec.Code)
+	}
+
+	// 2. Valid login
+	loginReq := newJSONRequest(ctx, http.MethodPost, "/api/v1/auth/login", map[string]string{
+		"username": "admin",
+		"password": "correct",
+	}, nil, csrfToken)
+	loginRec := httptest.NewRecorder()
+	fix.server.ServeHTTP(loginRec, loginReq)
+	if loginRec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", loginRec.Code, loginRec.Body.String())
+	}
+
+	cookies := loginRec.Result().Cookies()
+	var sessionCookie *http.Cookie
+	for _, c := range cookies {
+		if c.Name == "session_id" {
+			sessionCookie = c
+			break
+		}
+	}
+	if sessionCookie == nil {
+		t.Fatalf("expected session_id cookie to be set")
+	}
+
+	// 3. Check session with cookie
+	sessionReq := newJSONRequest(ctx, http.MethodGet, "/api/v1/auth/session", nil, sessionCookie, "")
+	sessionRec := httptest.NewRecorder()
+	fix.server.ServeHTTP(sessionRec, sessionReq)
+	if sessionRec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", sessionRec.Code)
+	}
+
+	var sessResp map[string]any
+	_ = json.Unmarshal(sessionRec.Body.Bytes(), &sessResp)
+	if sessResp["authenticated"] != true {
+		t.Fatalf("expected authenticated=true, got %v", sessResp["authenticated"])
 	}
 
 	// 4. Logout
-	formLogout := url.Values{"csrf_token": {csrf}}
-	req = httptest.NewRequestWithContext(ctx, http.MethodPost, "/logout", strings.NewReader(formLogout.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.AddCookie(userCookie)
-	//nolint:gosec // test cookie
-	req.AddCookie(&http.Cookie{Name: "csrf_token", Value: csrf})
-	w = httptest.NewRecorder()
-	fix.server.ServeHTTP(w, req)
-	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/login" {
-		t.Errorf("expected redirect to /login on logout, got %d", w.Code)
+	logoutReq := newJSONRequest(ctx, http.MethodPost, "/api/v1/auth/logout", nil, sessionCookie, csrfToken)
+	logoutRec := httptest.NewRecorder()
+	fix.server.ServeHTTP(logoutRec, logoutReq)
+	if logoutRec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", logoutRec.Code)
 	}
 }
 
-func TestAdminRoleWorkflows(t *testing.T) {
+func TestRBAC(t *testing.T) {
 	ctx := context.Background()
-
-	// First test Admin with Telegram NOT connected: should be forced to /admin/telegram when hitting /dashboard
-	fixNoTG := setupFixture(t, false, false)
-	//nolint:gosec // test cookie
-	adminCookie := &http.Cookie{Name: "session_id", Value: fixNoTG.adminToken}
-
-	req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/dashboard", nil)
-	req.AddCookie(adminCookie)
-	w := httptest.NewRecorder()
-	fixNoTG.server.ServeHTTP(w, req)
-	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/admin/telegram" {
-		t.Errorf("admin without telegram hitting /dashboard must redirect to /admin/telegram, got %d loc %s", w.Code, w.Header().Get("Location"))
-	}
-
-	// Now test Admin with Telegram connected
 	fix := setupFixture(t, false, true)
-	//nolint:gosec // test cookie
-	adminCookie = &http.Cookie{Name: "session_id", Value: fix.adminToken}
 
-	// 1. GET /admin/telegram
-	req = httptest.NewRequestWithContext(ctx, http.MethodGet, "/admin/telegram", nil)
-	req.AddCookie(adminCookie)
-	w = httptest.NewRecorder()
-	fix.server.ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Errorf("expected 200 for /admin/telegram, got %d", w.Code)
-	}
-	csrf := getCSRFTokenFromResponse(w.Result())
-
-	// 2. POST /admin/telegram/send-code
-	formCode := url.Values{
-		"csrf_token": {csrf},
-		"api_id":     {"37846961"},
-		"api_hash":   {"cd1e0e6e98dae6a46362b03acc5508db"},
-		"phone":      {"+5511999999999"},
-	}
-	req = httptest.NewRequestWithContext(ctx, http.MethodPost, "/admin/telegram/send-code", strings.NewReader(formCode.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.AddCookie(adminCookie)
-	//nolint:gosec // test cookie
-	req.AddCookie(&http.Cookie{Name: "csrf_token", Value: csrf})
-	w = httptest.NewRecorder()
-	fix.server.ServeHTTP(w, req)
-	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/admin/telegram" {
-		t.Errorf("expected redirect to /admin/telegram after send-code, got %d", w.Code)
+	// 1. Unauthenticated request to protected route -> 401
+	unauthReq := httptest.NewRequestWithContext(ctx, http.MethodGet, "/api/v1/dashboard", nil)
+	unauthRec := httptest.NewRecorder()
+	fix.server.ServeHTTP(unauthRec, unauthReq)
+	if unauthRec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", unauthRec.Code)
 	}
 
-	// 3. POST /admin/telegram/verify
-	formVerify := url.Values{
-		"csrf_token":   {csrf},
-		"phone_code":   {"12345"},
-		"password_2fa": {"my2fapassword"},
-	}
-	req = httptest.NewRequestWithContext(ctx, http.MethodPost, "/admin/telegram/verify", strings.NewReader(formVerify.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.AddCookie(adminCookie)
-	//nolint:gosec // test cookie
-	req.AddCookie(&http.Cookie{Name: "csrf_token", Value: csrf})
-	w = httptest.NewRecorder()
-	fix.server.ServeHTTP(w, req)
-	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/admin/channels" {
-		t.Errorf("expected redirect to /admin/channels after verify, got %d loc %s", w.Code, w.Header().Get("Location"))
+	userCookie := newSessionCookie(fix.regularToken)
+	adminCookie := newSessionCookie(fix.adminToken)
+
+	// 2. Regular user access to dashboard -> 200
+	userDashReq := newJSONRequest(ctx, http.MethodGet, "/api/v1/dashboard", nil, userCookie, "")
+	userDashRec := httptest.NewRecorder()
+	fix.server.ServeHTTP(userDashRec, userDashReq)
+	if userDashRec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", userDashRec.Code)
 	}
 
-	// 4. GET /admin/channels & update channel flags
-	req = httptest.NewRequestWithContext(ctx, http.MethodGet, "/admin/channels", nil)
-	req.AddCookie(adminCookie)
-	w = httptest.NewRecorder()
-	fix.server.ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Errorf("expected 200 for /admin/channels, got %d", w.Code)
+	// 3. Regular user access to admin routes -> 403
+	adminEndpoints := []string{
+		"/api/v1/admin/telegram",
+		"/api/v1/admin/channels",
+		"/api/v1/admin/users",
 	}
-
-	formChannels := url.Values{
-		"csrf_token":             {csrf},
-		"channel_ids":            {"-1001", "-1002"},
-		"monitor_products_-1001": {"true"},
-		"monitor_coupons_-1001":  {"false"},
-		"monitor_products_-1002": {"false"},
-		"monitor_coupons_-1002":  {"true"},
-	}
-	req = httptest.NewRequestWithContext(ctx, http.MethodPost, "/admin/channels/update", strings.NewReader(formChannels.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.AddCookie(adminCookie)
-	//nolint:gosec // test cookie
-	req.AddCookie(&http.Cookie{Name: "csrf_token", Value: csrf})
-	w = httptest.NewRecorder()
-	fix.server.ServeHTTP(w, req)
-	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/admin/channels" {
-		t.Errorf("expected redirect to /admin/channels after update, got %d", w.Code)
-	}
-
-	// 5. GET /admin/users & Create user
-	req = httptest.NewRequestWithContext(ctx, http.MethodGet, "/admin/users", nil)
-	req.AddCookie(adminCookie)
-	w = httptest.NewRecorder()
-	fix.server.ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Errorf("expected 200 for /admin/users, got %d", w.Code)
-	}
-
-	formCreateUser := url.Values{
-		"csrf_token": {csrf},
-		"username":   {"novousuario"},
-		"password":   {"novasenha123"},
-		"role":       {"user"},
-	}
-	req = httptest.NewRequestWithContext(ctx, http.MethodPost, "/admin/users", strings.NewReader(formCreateUser.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.AddCookie(adminCookie)
-	//nolint:gosec // test cookie
-	req.AddCookie(&http.Cookie{Name: "csrf_token", Value: csrf})
-	w = httptest.NewRecorder()
-	fix.server.ServeHTTP(w, req)
-	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/admin/users" {
-		t.Errorf("expected redirect to /admin/users after creating user, got %d", w.Code)
-	}
-
-	// Self-deletion check: admin cannot delete their own account (id: 1)
-	formDelete := url.Values{"csrf_token": {csrf}}
-	req = httptest.NewRequestWithContext(ctx, http.MethodPost, "/admin/users/1/delete", strings.NewReader(formDelete.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.AddCookie(adminCookie)
-	//nolint:gosec // test cookie
-	req.AddCookie(&http.Cookie{Name: "csrf_token", Value: csrf})
-	w = httptest.NewRecorder()
-	fix.server.ServeHTTP(w, req)
-	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/admin/users" {
-		t.Errorf("expected redirect to /admin/users, got %d", w.Code)
-	}
-	// Verify user 1 is still present
-	users, _ := fix.userAdminUC.ListUsers(context.Background())
-	foundSelf := false
-	for _, u := range users {
-		if u.ID == 1 {
-			foundSelf = true
+	for _, ep := range adminEndpoints {
+		req := newJSONRequest(ctx, http.MethodGet, ep, nil, userCookie, "")
+		rec := httptest.NewRecorder()
+		fix.server.ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 on %s for regular user, got %d", ep, rec.Code)
 		}
 	}
-	if !foundSelf {
-		t.Errorf("admin self-deletion should have been prevented")
-	}
-}
 
-func TestCSRFAndSecurityHeaders(t *testing.T) {
-	fix := setupFixture(t, false, true)
-	ctx := context.Background()
-
-	// 1. GET response must have security headers
-	req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/login", nil)
-	w := httptest.NewRecorder()
-	fix.server.ServeHTTP(w, req)
-
-	resp := w.Result()
-	if resp.Header.Get("X-Content-Type-Options") != "nosniff" {
-		t.Errorf("expected nosniff, got %q", resp.Header.Get("X-Content-Type-Options"))
-	}
-	if resp.Header.Get("X-Frame-Options") != "DENY" {
-		t.Errorf("expected DENY, got %q", resp.Header.Get("X-Frame-Options"))
-	}
-	if resp.Header.Get("Referrer-Policy") != "same-origin" {
-		t.Errorf("expected same-origin, got %q", resp.Header.Get("Referrer-Policy"))
-	}
-
-	// 2. POST without CSRF token must return 403 Forbidden
-	form := url.Values{
-		"username": {"admin"},
-		"password": {"password"},
-	}
-	req = httptest.NewRequestWithContext(ctx, http.MethodPost, "/login", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	w = httptest.NewRecorder()
-	fix.server.ServeHTTP(w, req)
-	if w.Code != http.StatusForbidden {
-		t.Errorf("expected 403 Forbidden for missing CSRF, got %d", w.Code)
-	}
-}
-
-func TestI18nSwitchLanguage(t *testing.T) {
-	fix := setupFixture(t, false, true)
-	ctx := context.Background()
-
-	// 1. Get login page with PT default
-	req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/login", nil)
-	w := httptest.NewRecorder()
-	fix.server.ServeHTTP(w, req)
-	body := w.Body.String()
-	if !strings.Contains(body, "Acesso ao Painel") {
-		t.Errorf("expected Portuguese text 'Acesso ao Painel' in default login page")
-	}
-
-	// 2. Query param ?lang=en-US sets English
-	req = httptest.NewRequestWithContext(ctx, http.MethodGet, "/login?lang=en-US", nil)
-	w = httptest.NewRecorder()
-	fix.server.ServeHTTP(w, req)
-	body = w.Body.String()
-	if !strings.Contains(body, "Dashboard Access") {
-		t.Errorf("expected English text 'Dashboard Access' with ?lang=en-US")
-	}
-
-	// 3. POST /lang sets cookie and redirects to referer
-	csrf := getCSRFTokenFromResponse(w.Result())
-	formLang := url.Values{
-		"csrf_token": {csrf},
-		"lang":       {"en-US"},
-	}
-	req = httptest.NewRequestWithContext(ctx, http.MethodPost, "/lang", strings.NewReader(formLang.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Referer", "/login")
-	//nolint:gosec // test cookie
-	req.AddCookie(&http.Cookie{Name: "csrf_token", Value: csrf})
-	w = httptest.NewRecorder()
-	fix.server.ServeHTTP(w, req)
-
-	resp := w.Result()
-	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/login" {
-		t.Errorf("expected redirect to /login from /lang, got %d", resp.StatusCode)
-	}
-
-	foundCookie := false
-	for _, c := range resp.Cookies() {
-		if c.Name == "lang" && c.Value == "en-US" {
-			foundCookie = true
+	// 4. Admin user access to admin routes -> 200
+	for _, ep := range adminEndpoints {
+		req := newJSONRequest(ctx, http.MethodGet, ep, nil, adminCookie, "")
+		rec := httptest.NewRecorder()
+		fix.server.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200 on %s for admin user, got %d", ep, rec.Code)
 		}
 	}
-	if !foundCookie {
-		t.Errorf("expected lang=en-US cookie set on POST /lang")
+}
+
+func TestCSRFProtection(t *testing.T) {
+	ctx := context.Background()
+	fix := setupFixture(t, false, true)
+	adminCookie := newSessionCookie(fix.adminToken)
+
+	// Mutating request without CSRF -> 403
+	reqWithoutCSRF := httptest.NewRequestWithContext(ctx, http.MethodPost, "/api/v1/interests", strings.NewReader(`{"term":"tv"}`))
+	reqWithoutCSRF.Header.Set("Content-Type", "application/json")
+	reqWithoutCSRF.AddCookie(adminCookie)
+	recWithoutCSRF := httptest.NewRecorder()
+	fix.server.ServeHTTP(recWithoutCSRF, reqWithoutCSRF)
+	if recWithoutCSRF.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 without CSRF token, got %d", recWithoutCSRF.Code)
+	}
+
+	// Mutating request with mismatched CSRF token -> 403
+	reqMismatched := httptest.NewRequestWithContext(ctx, http.MethodPost, "/api/v1/interests", strings.NewReader(`{"term":"tv"}`))
+	reqMismatched.Header.Set("Content-Type", "application/json")
+	reqMismatched.AddCookie(adminCookie)
+	reqMismatched.AddCookie(newCSRFCookie("token-a"))
+	reqMismatched.Header.Set("X-CSRF-Token", "token-b")
+	recMismatched := httptest.NewRecorder()
+	fix.server.ServeHTTP(recMismatched, reqMismatched)
+	if recMismatched.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 with mismatched CSRF token, got %d", recMismatched.Code)
+	}
+
+	// Mutating request with valid CSRF token -> 201 Created
+	reqValid := newJSONRequest(ctx, http.MethodPost, "/api/v1/interests", map[string]string{
+		"term": "nintendo switch",
+	}, adminCookie, "valid-token")
+	recValid := httptest.NewRecorder()
+	fix.server.ServeHTTP(recValid, reqValid)
+	if recValid.Code != http.StatusCreated {
+		t.Fatalf("expected 201 with valid CSRF token, got %d: %s", recValid.Code, recValid.Body.String())
+	}
+}
+
+func TestCORS(t *testing.T) {
+	ctx := context.Background()
+	fix := setupFixture(t, false, true)
+
+	// Preflight OPTIONS request
+	optReq := httptest.NewRequestWithContext(ctx, http.MethodOptions, "/api/v1/interests", nil)
+	optReq.Header.Set("Origin", "http://localhost:5173")
+	optRec := httptest.NewRecorder()
+	fix.server.ServeHTTP(optRec, optReq)
+
+	if optRec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204 on OPTIONS preflight, got %d", optRec.Code)
+	}
+	if optRec.Header().Get("Access-Control-Allow-Origin") != "http://localhost:5173" {
+		t.Fatalf("unexpected origin header: %s", optRec.Header().Get("Access-Control-Allow-Origin"))
+	}
+	if optRec.Header().Get("Access-Control-Allow-Credentials") != "true" {
+		t.Fatalf("expected credentials header to be true")
+	}
+}
+
+func TestInterestsCRUD(t *testing.T) {
+	ctx := context.Background()
+	fix := setupFixture(t, false, true)
+	userCookie := newSessionCookie(fix.regularToken)
+	csrfToken := "test-token"
+
+	// 1. List interests
+	listReq := newJSONRequest(ctx, http.MethodGet, "/api/v1/interests", nil, userCookie, "")
+	listRec := httptest.NewRecorder()
+	fix.server.ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", listRec.Code)
+	}
+
+	var list []map[string]any
+	if err := json.Unmarshal(listRec.Body.Bytes(), &list); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("expected 1 interest, got %d", len(list))
+	}
+
+	// 2. Add interest
+	addReq := newJSONRequest(ctx, http.MethodPost, "/api/v1/interests", map[string]any{
+		"term":     "ps5 pro",
+		"maxPrice": 6500.0,
+	}, userCookie, csrfToken)
+	addRec := httptest.NewRecorder()
+	fix.server.ServeHTTP(addRec, addReq)
+	if addRec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", addRec.Code, addRec.Body.String())
+	}
+
+	// 3. Add interest with empty term -> 400
+	badAddReq := newJSONRequest(ctx, http.MethodPost, "/api/v1/interests", map[string]string{
+		"term": "   ",
+	}, userCookie, csrfToken)
+	badAddRec := httptest.NewRecorder()
+	fix.server.ServeHTTP(badAddRec, badAddReq)
+	if badAddRec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 on empty term, got %d", badAddRec.Code)
+	}
+
+	// 4. Delete interest
+	delReq := newJSONRequest(ctx, http.MethodDelete, "/api/v1/interests/1", nil, userCookie, csrfToken)
+	delRec := httptest.NewRecorder()
+	fix.server.ServeHTTP(delRec, delReq)
+	if delRec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", delRec.Code)
+	}
+}
+
+func TestOffersEndpoint(t *testing.T) {
+	ctx := context.Background()
+	fix := setupFixture(t, false, true)
+	userCookie := newSessionCookie(fix.regularToken)
+
+	req := newJSONRequest(ctx, http.MethodGet, "/api/v1/offers?q=switch", nil, userCookie, "")
+	rec := httptest.NewRecorder()
+	fix.server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to decode offers json: %v", err)
+	}
+
+	products, ok := resp["products"].([]any)
+	if !ok || len(products) != 1 {
+		t.Fatalf("expected 1 product, got %v", resp["products"])
+	}
+}
+
+func TestAdminOperations(t *testing.T) {
+	ctx := context.Background()
+	fix := setupFixture(t, false, true)
+	adminCookie := newSessionCookie(fix.adminToken)
+	csrfToken := "test-token"
+
+	// 1. Telegram status
+	tgReq := newJSONRequest(ctx, http.MethodGet, "/api/v1/admin/telegram", nil, adminCookie, "")
+	tgRec := httptest.NewRecorder()
+	fix.server.ServeHTTP(tgRec, tgReq)
+	if tgRec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", tgRec.Code)
+	}
+
+	// 2. Telegram send code
+	sendCodeReq := newJSONRequest(ctx, http.MethodPost, "/api/v1/admin/telegram/send-code", map[string]any{
+		"apiId":   123456,
+		"apiHash": "abcdef",
+		"phone":   "+5511999999999",
+	}, adminCookie, csrfToken)
+	sendCodeRec := httptest.NewRecorder()
+	fix.server.ServeHTTP(sendCodeRec, sendCodeReq)
+	if sendCodeRec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", sendCodeRec.Code)
+	}
+
+	// 3. Telegram verify
+	verifyReq := newJSONRequest(ctx, http.MethodPost, "/api/v1/admin/telegram/verify", map[string]string{
+		"phoneCode": "12345",
+	}, adminCookie, csrfToken)
+	verifyRec := httptest.NewRecorder()
+	fix.server.ServeHTTP(verifyRec, verifyReq)
+	if verifyRec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", verifyRec.Code)
+	}
+
+	// 4. Channels list & update
+	chListReq := newJSONRequest(ctx, http.MethodGet, "/api/v1/admin/channels", nil, adminCookie, "")
+	chListRec := httptest.NewRecorder()
+	fix.server.ServeHTTP(chListRec, chListReq)
+	if chListRec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", chListRec.Code)
+	}
+
+	chUpdateReq := newJSONRequest(ctx, http.MethodPut, "/api/v1/admin/channels", map[string]any{
+		"channels": []map[string]any{
+			{"chatId": 1001, "monitorProducts": false, "monitorCoupons": true},
+		},
+	}, adminCookie, csrfToken)
+	chUpdateRec := httptest.NewRecorder()
+	fix.server.ServeHTTP(chUpdateRec, chUpdateReq)
+	if chUpdateRec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", chUpdateRec.Code)
+	}
+
+	// 5. Users CRUD
+	usersListReq := newJSONRequest(ctx, http.MethodGet, "/api/v1/admin/users", nil, adminCookie, "")
+	usersListRec := httptest.NewRecorder()
+	fix.server.ServeHTTP(usersListRec, usersListReq)
+	if usersListRec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", usersListRec.Code)
+	}
+
+	userCreateReq := newJSONRequest(ctx, http.MethodPost, "/api/v1/admin/users", map[string]string{
+		"username": "novousuario",
+		"password": "password123",
+		"role":     "user",
+	}, adminCookie, csrfToken)
+	userCreateRec := httptest.NewRecorder()
+	fix.server.ServeHTTP(userCreateRec, userCreateReq)
+	if userCreateRec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", userCreateRec.Code)
+	}
+
+	userPassReq := newJSONRequest(ctx, http.MethodPut, "/api/v1/admin/users/2/password", map[string]string{
+		"password": "newpassword123",
+	}, adminCookie, csrfToken)
+	userPassRec := httptest.NewRecorder()
+	fix.server.ServeHTTP(userPassRec, userPassReq)
+	if userPassRec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", userPassRec.Code)
+	}
+
+	// Cannot delete self
+	delSelfReq := newJSONRequest(ctx, http.MethodDelete, "/api/v1/admin/users/1", nil, adminCookie, csrfToken)
+	delSelfRec := httptest.NewRecorder()
+	fix.server.ServeHTTP(delSelfRec, delSelfReq)
+	if delSelfRec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 when deleting self, got %d", delSelfRec.Code)
+	}
+
+	// Delete other user
+	delUserReq := newJSONRequest(ctx, http.MethodDelete, "/api/v1/admin/users/2", nil, adminCookie, csrfToken)
+	delUserRec := httptest.NewRecorder()
+	fix.server.ServeHTTP(delUserRec, delUserReq)
+	if delUserRec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204 when deleting other user, got %d", delUserRec.Code)
 	}
 }
