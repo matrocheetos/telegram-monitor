@@ -20,5 +20,5 @@ services:
       - NTFY_URL=${NTFY_URL:-https://ntfy.sh}
       - NTFY_TOPIC_SEPARATOR=-
       - NTFY_TOPIC_PREFIX=${NTFY_TOPIC_PREFIX:-test-}
-      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-http://localhost:5173,http://localhost:8787,https://promos.matrochares.qzz.io}
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-http://localhost:5173,http://localhost:8787}
       - GOMEMLIMIT=128MiB
