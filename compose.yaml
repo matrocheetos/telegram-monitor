@@ -1,0 +1,25 @@
+services:
+  telegram-monitor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: telegram-monitor:latest
+    container_name: telegram-monitor
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - APP_SECRET_KEY=${APP_SECRET_KEY:-default-development-secret-key-32-bytes}
+      - DB_PATH=/app/data/telegram-monitor.db
+      - HTTP_PORT=8080
+      - APPRISE_URL=${APPRISE_URL:-http://apprise:8000}
+      - APPRISE_KEY=${APPRISE_KEY:-}
+      - NTFY_URL=${NTFY_URL:-https://ntfy.sh}
+      - NTFY_TOPIC_SEPARATOR=-
+      - GOMEMLIMIT=28MiB
+    deploy:
+      resources:
+        limits:
+          memory: 32M

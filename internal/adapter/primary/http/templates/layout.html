@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="{{.CurrentLang}}">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{if .Title}}{{.Title}} · {{end}}{{.T "brand_title"}}</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <header class="navbar">
+    <div class="nav-brand">
+      <span class="brand-badge">TM</span>
+      {{if not .User}}
+        <span class="brand-title">{{.T "brand_title"}}</span>
+      {{else}}
+        <a href="/dashboard" class="brand-title">{{.T "brand_title"}}</a>
+      {{end}}
+    </div>
+
+    {{if .User}}
+      <nav class="nav-links">
+        {{if eq .User.Role "admin"}}
+          <a href="/admin/telegram" class="nav-item {{if eq .ActiveNav "telegram"}}active{{end}}">{{.T "nav_admin_telegram"}}</a>
+          <a href="/admin/channels" class="nav-item {{if eq .ActiveNav "channels"}}active{{end}}">{{.T "nav_admin_channels"}}</a>
+          <a href="/admin/users" class="nav-item {{if eq .ActiveNav "users"}}active{{end}}">{{.T "nav_admin_users"}}</a>
+          <a href="/dashboard" class="nav-item {{if eq .ActiveNav "dashboard"}}active{{end}}">{{.T "nav_admin_interests"}}</a>
+        {{else}}
+          <a href="/dashboard" class="nav-item {{if eq .ActiveNav "dashboard"}}active{{end}}">{{.T "nav_my_interests"}}</a>
+        {{end}}
+      </nav>
+    {{end}}
+
+    <div class="nav-user">
+      {{if .User}}
+        <div class="user-badge">
+          {{.T "connected_as" .User.Username}}
+          <span class="role-tag">({{.User.Role}})</span>
+        </div>
+      {{end}}
+
+      <div class="lang-switcher">
+        <form action="/lang" method="POST" style="display:inline; margin:0;">
+          <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+          <input type="hidden" name="lang" value="pt-BR">
+          <button type="submit" class="lang-btn {{if eq .CurrentLang "pt-BR"}}active{{end}}">🌐 PT</button>
+        </form>
+        <span class="lang-sep">|</span>
+        <form action="/lang" method="POST" style="display:inline; margin:0;">
+          <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+          <input type="hidden" name="lang" value="en-US">
+          <button type="submit" class="lang-btn {{if eq .CurrentLang "en-US"}}active{{end}}">EN</button>
+        </form>
+      </div>
+
+      {{if .User}}
+        <form action="/logout" method="POST" style="display:inline; margin:0;">
+          <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+          <button type="submit" class="btn btn-secondary btn-sm">{{.T "logout"}}</button>
+        </form>
+      {{end}}
+    </div>
+  </header>
+
+  {{if .Flash}}
+    <div style="max-width: 1280px; margin: 1rem auto 0 auto; padding: 0 1.5rem;">
+      <div class="alert alert-{{.Flash.Type}}">
+        {{.Flash.Message}}
+      </div>
+    </div>
+  {{end}}
+
+  <main>
+    {{template "content" .}}
+  </main>
+</body>
+</html>

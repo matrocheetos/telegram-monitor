@@ -1,0 +1,127 @@
+{{define "content"}}
+<div class="container">
+  <div class="page-header">
+    <div>
+      <h1 class="page-title">{{.T "admin_ch_title"}}</h1>
+      <p class="page-subtitle">{{.T "admin_ch_subtitle"}}</p>
+    </div>
+    <div>
+      <form action="/admin/channels/sync" method="POST" style="margin: 0;">
+        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+        <button type="submit" class="btn btn-primary">
+          {{.T "admin_ch_sync_btn"}}
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <!-- 3 KPI Cards -->
+  <div class="card-grid" style="grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); margin-bottom: 1.5rem;">
+    <div class="kpi-card">
+      <div class="kpi-title">{{.T "admin_ch_kpi1_title"}}</div>
+      <div class="kpi-value" style="color: var(--success-dark);">
+        {{if .Data.Connected}}
+          {{.T "admin_ch_kpi1_status" .Data.PhoneMasked}}
+        {{else}}
+          ● {{.T "status_disconnected"}}
+        {{end}}
+      </div>
+      <div class="kpi-desc">{{.T "admin_ch_kpi1_desc" (len .Data.Channels)}}</div>
+    </div>
+
+    <div class="kpi-card">
+      <div class="kpi-title">{{.T "admin_ch_kpi2_title"}}</div>
+      <div class="kpi-value" style="color: var(--warning); font-family: monospace;">{{.T "admin_ch_kpi2_topic"}}</div>
+      <div class="kpi-desc">{{.T "admin_ch_kpi2_desc" .Data.CouponsChannelsCount}}</div>
+    </div>
+
+    <div class="kpi-card">
+      <div class="kpi-title">{{.T "admin_ch_kpi3_title"}}</div>
+      <div class="kpi-value" style="color: var(--primary); font-family: monospace;">{{.T "admin_ch_kpi3_topic" .User.Username}}</div>
+      <div class="kpi-desc">{{.T "admin_ch_kpi3_desc" .Data.ProductsChannelsCount}}</div>
+    </div>
+  </div>
+
+  <!-- Channels List & Toggles -->
+  <div class="card">
+    <form action="/admin/channels/update" method="POST">
+      <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.25rem; flex-wrap: wrap; gap: 1rem;">
+        <div style="flex: 1; max-width: 480px;">
+          <input type="text" id="channelSearchInput" class="form-control" placeholder="{{.T "admin_ch_search_placeholder"}}">
+        </div>
+        <button type="submit" class="btn btn-primary">
+          {{.T "admin_ch_save_btn"}}
+        </button>
+      </div>
+
+      <div class="table-wrapper">
+        <table id="channelsTable">
+          <thead>
+            <tr>
+              <th>{{.T "admin_ch_col_channel"}}</th>
+              <th>{{.T "admin_ch_col_chat_id"}}</th>
+              <th style="text-align: center;">{{.T "admin_ch_col_products"}}</th>
+              <th style="text-align: center;">{{.T "admin_ch_col_coupons"}}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {{if not .Data.Channels}}
+              <tr>
+                <td colspan="4" style="text-align: center; color: var(--text-muted); padding: 2.5rem;">
+                  {{.T "admin_ch_no_channels"}}
+                </td>
+              </tr>
+            {{else}}
+              {{range .Data.Channels}}
+                <tr>
+                  <td style="font-weight: 600;">
+                    <input type="hidden" name="channel_ids" value="{{.ChatID}}">
+                    {{.Title}}
+                  </td>
+                  <td style="font-family: monospace; color: var(--text-muted); font-size: 0.8rem;">
+                    {{.ChatID}} {{if .Username}}• @{{.Username}}{{end}}
+                  </td>
+                  <td style="text-align: center;">
+                    <label style="cursor: pointer; display: inline-flex; align-items: center; gap: 0.35rem;">
+                      <input type="checkbox" name="monitor_products_{{.ChatID}}" value="true" {{if .MonitorProducts}}checked{{end}}>
+                      <span style="font-size: 0.8rem;">
+                        {{if .MonitorProducts}}
+                          <span style="color: var(--success);">{{$.T "admin_ch_monitoring_products"}}</span>
+                        {{else}}
+                          <span style="color: var(--text-muted);">{{$.T "admin_ch_ignoring_products"}}</span>
+                        {{end}}
+                      </span>
+                    </label>
+                  </td>
+                  <td style="text-align: center;">
+                    <label style="cursor: pointer; display: inline-flex; align-items: center; gap: 0.35rem;">
+                      <input type="checkbox" name="monitor_coupons_{{.ChatID}}" value="true" {{if .MonitorCoupons}}checked{{end}}>
+                      <span style="font-size: 0.8rem;">
+                        {{if .MonitorCoupons}}
+                          <span style="color: var(--warning);">{{$.T "admin_ch_coupon_active"}}</span>
+                        {{else}}
+                          <span style="color: var(--text-muted);">{{$.T "admin_ch_ignoring_coupons"}}</span>
+                        {{end}}
+                      </span>
+                    </label>
+                  </td>
+                </tr>
+              {{end}}
+            {{end}}
+          </tbody>
+        </table>
+      </div>
+
+      {{if .Data.Channels}}
+        <div style="margin-top: 1.25rem; display: flex; justify-content: flex-end;">
+          <button type="submit" class="btn btn-primary">
+            {{.T "admin_ch_save_btn"}}
+          </button>
+        </div>
+      {{end}}
+    </form>
+  </div>
+</div>
+{{end}}
