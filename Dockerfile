@@ -22,21 +22,22 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build \
 # Final Minimal Stage
 FROM alpine:3.21
 
-RUN apk add --no-cache ca-certificates tzdata \
-    && addgroup -g 10001 -S appuser \
-    && adduser -u 10001 -S appuser -G appuser \
+RUN apk add --no-cache ca-certificates tzdata su-exec \
+    && addgroup -g 1000 -S appuser \
+    && adduser -u 1000 -S -G appuser -s /bin/sh appuser \
     && mkdir -p /app/data \
-    && chown -R appuser:appuser /app
+    && chown -R 1000:1000 /app
 
 COPY --from=builder /bin/telegram-monitor /bin/telegram-monitor
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
-USER appuser
 WORKDIR /app
 
 EXPOSE 8080
 
 ENV DB_PATH=/app/data/telegram-monitor.db \
     HTTP_PORT=8080 \
-    GOMEMLIMIT=28MiB
+    GOMEMLIMIT=128MiB
 
-ENTRYPOINT ["/bin/telegram-monitor"]
+ENTRYPOINT ["/entrypoint.sh"]
