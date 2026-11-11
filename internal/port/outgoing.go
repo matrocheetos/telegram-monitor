@@ -63,6 +63,7 @@ type MatchHistoryRepository interface {
 
 type CouponRepository interface {
 	RecordCoupon(ctx context.Context, code, storeName, storeURL string, channelID int64, text string) error
+	HasRecentCoupon(ctx context.Context, code, storeName string, since time.Time) (bool, error)
 	ListExtractedCoupons(ctx context.Context, searchQuery string, limit, offset int) ([]domain.ExtractedCoupon, int, error)
 	PruneOlderThan(ctx context.Context, cutoff time.Time, batchSize int) (int64, error)
 	PruneExcessAbove(ctx context.Context, maxKeep int64, batchSize int) (int64, error)

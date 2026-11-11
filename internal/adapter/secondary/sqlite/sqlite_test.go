@@ -529,6 +529,7 @@ func TestMigration002_CompositeIndexes(t *testing.T) {
 		"idx_matched_products_created_id",
 		"idx_matched_products_user_created",
 		"idx_coupons_created_id",
+		"idx_coupons_store_code_created",
 	}
 
 	for _, idx := range indexes {
@@ -891,6 +892,140 @@ func TestCouponRepository_RetentionPruning(t *testing.T) {
 	total, _ = couponRepo.CountTotal(ctx)
 	if total != 2 {
 		t.Fatalf("expected 2 coupons left, got %d", total)
+	}
+}
+
+func TestCouponRepository_HasRecentCoupon(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db := newTestDB(t)
+	couponRepo := sqlite.NewCouponRepository(db)
+
+	now := time.Now().UTC()
+	// Insert coupon created 2 hours ago
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO coupons (code, store_name, store_url, channel_id, message_text, created_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, "DESCONTO10", "Amazon", "https://amazon.com.br", -100, "10% off", now.Add(-2*time.Hour))
+	if err != nil {
+		t.Fatalf("insert coupon failed: %v", err)
+	}
+
+	// 1. Check with since = 4 hours ago -> should return true (was created 2h ago >= 4h ago)
+	has, err := couponRepo.HasRecentCoupon(ctx, "DESCONTO10", "Amazon", now.Add(-4*time.Hour))
+	if err != nil {
+		t.Fatalf("HasRecentCoupon failed: %v", err)
+	}
+	if !has {
+		t.Errorf("expected true for coupon created 2h ago with cutoff 4h ago")
+	}
+
+	// 2. Case insensitive check -> should return true
+	has, err = couponRepo.HasRecentCoupon(ctx, "desconto10", "amazon", now.Add(-4*time.Hour))
+	if err != nil {
+		t.Fatalf("HasRecentCoupon case-insensitive failed: %v", err)
+	}
+	if !has {
+		t.Errorf("expected true for case-insensitive match")
+	}
+
+	// 3. Check with since = 1 hour ago -> should return false (created 2h ago < 1h ago)
+	has, err = couponRepo.HasRecentCoupon(ctx, "DESCONTO10", "Amazon", now.Add(-1*time.Hour))
+	if err != nil {
+		t.Fatalf("HasRecentCoupon failed: %v", err)
+	}
+	if has {
+		t.Errorf("expected false for coupon created 2h ago with cutoff 1h ago")
+	}
+
+	// 4. Mismatched store -> should return false
+	has, err = couponRepo.HasRecentCoupon(ctx, "DESCONTO10", "Mercado Livre", now.Add(-4*time.Hour))
+	if err != nil {
+		t.Fatalf("HasRecentCoupon failed: %v", err)
+	}
+	if has {
+		t.Errorf("expected false for different store")
+	}
+
+	// 5. Mismatched code -> should return false
+	has, err = couponRepo.HasRecentCoupon(ctx, "OUTRO10", "Amazon", now.Add(-4*time.Hour))
+	if err != nil {
+		t.Fatalf("HasRecentCoupon failed: %v", err)
+	}
+	if has {
+		t.Errorf("expected false for different code")
+	}
+}
+
+func TestCouponRepository_ListExtractedCoupons_Dedup4Hours(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db := newTestDB(t)
+	couponRepo := sqlite.NewCouponRepository(db)
+
+	baseTime := time.Date(2026, 11, 10, 10, 0, 0, 0, time.UTC)
+
+	// A1: Amazon, CUPOM10 at 10:00 (first)
+	_, _ = db.ExecContext(ctx, `
+		INSERT INTO coupons (id, code, store_name, store_url, channel_id, message_text, created_at)
+		VALUES (1, 'CUPOM10', 'Amazon', 'https://amazon.com.br', -100, 'text 1', ?)
+	`, baseTime)
+
+	// A2: Amazon, CUPOM10 at 11:00 (duplicate, within 4h of A1)
+	_, _ = db.ExecContext(ctx, `
+		INSERT INTO coupons (id, code, store_name, store_url, channel_id, message_text, created_at)
+		VALUES (2, 'CUPOM10', 'Amazon', 'https://amazon.com.br', -100, 'text 2', ?)
+	`, baseTime.Add(1*time.Hour))
+
+	// A3: Amazon, CUPOM10 at 12:00 (duplicate, within 4h of A1)
+	_, _ = db.ExecContext(ctx, `
+		INSERT INTO coupons (id, code, store_name, store_url, channel_id, message_text, created_at)
+		VALUES (3, 'CUPOM10', 'Amazon', 'https://amazon.com.br', -100, 'text 3', ?)
+	`, baseTime.Add(2*time.Hour))
+
+	// A4: Amazon, CUPOM10 at 17:00 (>4h after A3 at 12:00 and A1 at 10:00)
+	_, _ = db.ExecContext(ctx, `
+		INSERT INTO coupons (id, code, store_name, store_url, channel_id, message_text, created_at)
+		VALUES (4, 'CUPOM10', 'Amazon', 'https://amazon.com.br', -100, 'text 4', ?)
+	`, baseTime.Add(7*time.Hour))
+
+	// M1: Magalu, CUPOM10 at 11:00 (different store, should be preserved!)
+	_, _ = db.ExecContext(ctx, `
+		INSERT INTO coupons (id, code, store_name, store_url, channel_id, message_text, created_at)
+		VALUES (5, 'CUPOM10', 'Magalu', 'https://magalu.com', -100, 'text magalu', ?)
+	`, baseTime.Add(1*time.Hour))
+
+	coupons, total, err := couponRepo.ListExtractedCoupons(ctx, "", 50, 0)
+	if err != nil {
+		t.Fatalf("ListExtractedCoupons failed: %v", err)
+	}
+
+	// Should have exactly:
+	// - id 4: Amazon at 16:00
+	// - id 5: Magalu at 11:00
+	// - id 1: Amazon at 10:00
+	// (id 2 and id 3 are excluded because id 1 exists within 4h before them)
+	if total != 3 || len(coupons) != 3 {
+		t.Fatalf("expected total=3, len=3, got total=%d len=%d", total, len(coupons))
+	}
+
+	expectedIDs := []int64{4, 5, 1}
+	for i, expID := range expectedIDs {
+		if coupons[i].ID != expID {
+			t.Errorf("at index %d: expected id %d, got %d", i, expID, coupons[i].ID)
+		}
+	}
+
+	// Test with search query
+	filtered, filteredTotal, err := couponRepo.ListExtractedCoupons(ctx, "Amazon", 50, 0)
+	if err != nil {
+		t.Fatalf("ListExtractedCoupons with search failed: %v", err)
+	}
+	if filteredTotal != 2 || len(filtered) != 2 {
+		t.Fatalf("expected filteredTotal=2, got %d", filteredTotal)
+	}
+	if filtered[0].ID != 4 || filtered[1].ID != 1 {
+		t.Errorf("expected IDs 4 and 1, got %d and %d", filtered[0].ID, filtered[1].ID)
 	}
 }
 

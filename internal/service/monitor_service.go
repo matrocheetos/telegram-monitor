@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/matrocheetos/telegram-monitor/internal/domain"
 	"github.com/matrocheetos/telegram-monitor/internal/port"
@@ -38,8 +40,9 @@ type MatcherSnapshot struct {
 }
 
 type MonitorConfig struct {
-	WorkerCount int
-	QueueSize   int
+	WorkerCount       int
+	QueueSize         int
+	CouponDedupWindow time.Duration
 }
 
 type jobKind int
@@ -73,10 +76,12 @@ type MonitorService struct {
 	snapshot atomic.Pointer[MatcherSnapshot]
 	jobs     chan monitorJob
 
-	mu       sync.Mutex
-	running  atomic.Bool
-	cancelFn context.CancelFunc
-	wg       sync.WaitGroup
+	mu          sync.Mutex
+	running     atomic.Bool
+	cancelFn    context.CancelFunc
+	wg          sync.WaitGroup
+	dedupMu     sync.Mutex
+	couponDedup map[string]time.Time
 }
 
 func NewMonitorService(
@@ -94,6 +99,9 @@ func NewMonitorService(
 	if cfg.QueueSize <= 0 {
 		cfg.QueueSize = 1024
 	}
+	if cfg.CouponDedupWindow <= 0 {
+		cfg.CouponDedupWindow = 4 * time.Hour
+	}
 
 	s := &MonitorService{
 		userRepo:            userRepo,
@@ -104,6 +112,7 @@ func NewMonitorService(
 		notificationGateway: notificationGateway,
 		cfg:                 cfg,
 		jobs:                make(chan monitorJob, cfg.QueueSize),
+		couponDedup:         make(map[string]time.Time),
 	}
 
 	s.snapshot.Store(&MatcherSnapshot{
@@ -186,15 +195,10 @@ func (s *MonitorService) processJob(ctx context.Context, job monitorJob) {
 			}
 		}
 	case jobKindCoupon:
-		if s.notificationGateway != nil {
-			if err := s.notificationGateway.SendCouponNotification(ctx, job.coupon); err != nil {
-				slog.Error("failed to send coupon notification",
-					"code", job.coupon.Code,
-					"store", job.coupon.StoreName,
-					"error", err,
-				)
-			}
+		if s.isDuplicateCoupon(ctx, job.coupon) {
+			return
 		}
+
 		if s.couponRepo != nil {
 			if err := s.couponRepo.RecordCoupon(ctx, job.coupon.Code, job.coupon.StoreName, job.coupon.StoreURL, job.channelID, job.text); err != nil {
 				slog.Error("failed to record coupon",
@@ -205,7 +209,58 @@ func (s *MonitorService) processJob(ctx context.Context, job monitorJob) {
 				)
 			}
 		}
+		if s.notificationGateway != nil {
+			if err := s.notificationGateway.SendCouponNotification(ctx, job.coupon); err != nil {
+				slog.Error("failed to send coupon notification",
+					"code", job.coupon.Code,
+					"store", job.coupon.StoreName,
+					"error", err,
+				)
+			}
+		}
 	}
+}
+
+func (s *MonitorService) isDuplicateCoupon(ctx context.Context, coupon domain.Coupon) bool {
+	key := strings.ToUpper(strings.TrimSpace(coupon.Code)) + "|" + strings.ToLower(strings.TrimSpace(coupon.StoreName))
+	now := time.Now().UTC()
+	cutoff := now.Add(-s.cfg.CouponDedupWindow)
+
+	s.dedupMu.Lock()
+	if lastSeen, found := s.couponDedup[key]; found && lastSeen.After(cutoff) {
+		s.dedupMu.Unlock()
+		return true
+	}
+	s.dedupMu.Unlock()
+
+	if s.couponRepo != nil {
+		hasRecent, err := s.couponRepo.HasRecentCoupon(ctx, coupon.Code, coupon.StoreName, cutoff)
+		if err != nil {
+			slog.Error("failed to check recent coupon in repository", "error", err)
+		} else if hasRecent {
+			s.dedupMu.Lock()
+			s.couponDedup[key] = now
+			s.dedupMu.Unlock()
+			return true
+		}
+	}
+
+	s.dedupMu.Lock()
+	if lastSeen, found := s.couponDedup[key]; found && lastSeen.After(cutoff) {
+		s.dedupMu.Unlock()
+		return true
+	}
+	s.couponDedup[key] = now
+	if len(s.couponDedup) > 2000 {
+		for k, t := range s.couponDedup {
+			if t.Before(cutoff) {
+				delete(s.couponDedup, k)
+			}
+		}
+	}
+	s.dedupMu.Unlock()
+
+	return false
 }
 
 func (s *MonitorService) RebuildSnapshot(ctx context.Context) error {
@@ -373,7 +428,18 @@ func (s *MonitorService) matchProducts(ctx context.Context, interests []Compiled
 
 func (s *MonitorService) matchCoupons(ctx context.Context, channelID int64, messageText string) {
 	coupons := domain.ExtractCoupons(messageText)
+	if len(coupons) == 0 {
+		return
+	}
+
+	seenInMsg := make(map[string]struct{}, len(coupons))
 	for _, coupon := range coupons {
+		key := strings.ToUpper(strings.TrimSpace(coupon.Code)) + "|" + strings.ToLower(strings.TrimSpace(coupon.StoreName))
+		if _, exists := seenInMsg[key]; exists {
+			continue
+		}
+		seenInMsg[key] = struct{}{}
+
 		job := monitorJob{
 			kind:      jobKindCoupon,
 			channelID: channelID,

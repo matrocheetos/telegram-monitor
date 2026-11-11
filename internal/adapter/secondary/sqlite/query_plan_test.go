@@ -197,6 +197,16 @@ func TestExplainQueryPlans(t *testing.T) {
 		}
 	})
 
+	t.Run("HasRecentCoupon", func(t *testing.T) {
+		q := `
+			SELECT 1 FROM coupons
+			WHERE UPPER(code) = UPPER(?) AND LOWER(store_name) = LOWER(?) AND created_at >= ?
+			LIMIT 1
+		`
+		plans := explainQuery(q, "CODE1", "Store", now)
+		t.Logf("HasRecentCoupon Plan:\n%s", strings.Join(plans, "\n"))
+	})
+
 	t.Run("Full_Delete_PruneOlderThan_MatchedProducts", func(t *testing.T) {
 		q := `
 			DELETE FROM matched_products

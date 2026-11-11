@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -33,6 +34,23 @@ func (r *CouponRepository) RecordCoupon(ctx context.Context, code, storeName, st
 	return nil
 }
 
+func (r *CouponRepository) HasRecentCoupon(ctx context.Context, code, storeName string, since time.Time) (bool, error) {
+	query := `
+		SELECT 1 FROM coupons
+		WHERE UPPER(code) = UPPER(?) AND LOWER(store_name) = LOWER(?) AND created_at >= ?
+		LIMIT 1
+	`
+	var dummy int
+	err := r.db.QueryRowContext(ctx, query, strings.TrimSpace(code), strings.TrimSpace(storeName), since.UTC()).Scan(&dummy)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, fmt.Errorf("check recent coupon: %w", err)
+	}
+	return true, nil
+}
+
 func (r *CouponRepository) ListExtractedCoupons(ctx context.Context, searchQuery string, limit, offset int) ([]domain.ExtractedCoupon, int, error) {
 	if limit <= 0 {
 		limit = 50
@@ -47,11 +65,22 @@ func (r *CouponRepository) ListExtractedCoupons(ctx context.Context, searchQuery
 	var args []any
 	var countArgs []any
 
+	const dedupCondition = `
+		NOT EXISTS (
+			SELECT 1 FROM coupons cp2
+			WHERE UPPER(cp2.code) = UPPER(cp.code)
+			  AND LOWER(cp2.store_name) = LOWER(cp.store_name)
+			  AND datetime(cp2.created_at) >= datetime(cp.created_at, '-4 hours')
+			  AND (cp2.created_at < cp.created_at OR (cp2.created_at = cp.created_at AND cp2.id < cp.id))
+		)
+	`
+
 	if searchQuery != "" {
 		filter := "%" + searchQuery + "%"
 		whereClause := `
 			WHERE (cp.code LIKE ? OR cp.store_name LIKE ? OR cp.message_text LIKE ? OR COALESCE(c.title, '') LIKE ?)
-		`
+			  AND ` + dedupCondition
+
 		countQuery = `
 			SELECT COUNT(*)
 			FROM coupons cp
@@ -78,7 +107,13 @@ func (r *CouponRepository) ListExtractedCoupons(ctx context.Context, searchQuery
 		countArgs = []any{filter, filter, filter, filter}
 		args = []any{filter, filter, filter, filter, limit, offset}
 	} else {
-		countQuery = `SELECT COUNT(*) FROM coupons`
+		whereClause := ` WHERE ` + dedupCondition
+
+		countQuery = `
+			SELECT COUNT(*)
+			FROM coupons cp
+		` + whereClause
+
 		selectQuery = `
 			SELECT
 				cp.id,
@@ -92,6 +127,7 @@ func (r *CouponRepository) ListExtractedCoupons(ctx context.Context, searchQuery
 				cp.created_at
 			FROM coupons cp
 			LEFT JOIN telegram_channels c ON cp.channel_id = c.chat_id
+		` + whereClause + `
 			ORDER BY cp.created_at DESC, cp.id DESC
 			LIMIT ? OFFSET ?
 		`

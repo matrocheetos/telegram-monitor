@@ -3,6 +3,7 @@ package service_test
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -222,8 +223,20 @@ func (m *mockCouponRepo) RecordCoupon(ctx context.Context, code, storeName, stor
 		Code:      code,
 		StoreName: storeName,
 		StoreURL:  storeURL,
+		CreatedAt: time.Now().UTC(),
 	})
 	return nil
+}
+
+func (m *mockCouponRepo) HasRecentCoupon(ctx context.Context, code, storeName string, since time.Time) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, c := range m.coupons {
+		if strings.EqualFold(c.Code, code) && strings.EqualFold(c.StoreName, storeName) && !c.CreatedAt.Before(since) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (m *mockCouponRepo) ListExtractedCoupons(ctx context.Context, searchQuery string, limit, offset int) ([]domain.ExtractedCoupon, int, error) {
@@ -507,5 +520,162 @@ func TestMonitorService_Concurrency_RebuildAndProcess(t *testing.T) {
 
 	if processedCount.Load() != messageWorkers*messagesPerWorker {
 		t.Fatalf("expected %d messages processed, got %d", messageWorkers*messagesPerWorker, processedCount.Load())
+	}
+}
+
+func TestMonitorService_CouponDeduplication(t *testing.T) {
+	t.Parallel()
+
+	userRepo := &mockUserRepo{}
+	interestRepo := &mockInterestRepo{}
+	channelRepo := newMockChannelRepo()
+	_ = channelRepo.UpsertChannel(context.Background(), &domain.TelegramChannel{
+		ChatID:         400,
+		Title:          "Cupons Canal 1",
+		MonitorCoupons: true,
+	})
+	_ = channelRepo.UpsertChannel(context.Background(), &domain.TelegramChannel{
+		ChatID:         401,
+		Title:          "Cupons Canal 2",
+		MonitorCoupons: true,
+	})
+
+	matchRepo := &mockMatchRepo{}
+	couponRepo := &mockCouponRepo{}
+	gateway := &mockNotificationGateway{}
+
+	// Configure a short dedup window for testing expiry: 100ms
+	cfg := service.MonitorConfig{
+		WorkerCount:       4,
+		QueueSize:         128,
+		CouponDedupWindow: 100 * time.Millisecond,
+	}
+
+	svc := service.NewMonitorService(
+		userRepo,
+		interestRepo,
+		channelRepo,
+		matchRepo,
+		couponRepo,
+		gateway,
+		cfg,
+	)
+
+	ctx := context.Background()
+	_ = svc.RebuildSnapshot(ctx)
+	svc.Start(ctx)
+	defer svc.Stop()
+
+	// 1. Send coupon for Amazon multiple times across different channels
+	msg1 := "🎟️ Cupom: DESCONTO10 na Amazon https://www.amazon.com.br/deal"
+	_ = svc.ProcessIncomingMessage(ctx, 400, msg1)
+	_ = svc.ProcessIncomingMessage(ctx, 401, msg1)
+	_ = svc.ProcessIncomingMessage(ctx, 400, msg1)
+
+	// 2. Send same coupon code for a different store (Mercado Livre)
+	msg2 := "🎟️ Cupom: DESCONTO10 no Mercado Livre https://www.mercadolivre.com.br/oferta"
+	_ = svc.ProcessIncomingMessage(ctx, 400, msg2)
+
+	// Wait for worker queue to settle
+	time.Sleep(50 * time.Millisecond)
+
+	couponRepo.mu.Lock()
+	gateway.mu.Lock()
+
+	if len(couponRepo.coupons) != 2 {
+		t.Fatalf("expected exactly 2 coupons recorded (Amazon + ML), got %d: %+v", len(couponRepo.coupons), couponRepo.coupons)
+	}
+	if len(gateway.couponNotifs) != 2 {
+		t.Fatalf("expected exactly 2 coupon notifications (Amazon + ML), got %d: %+v", len(gateway.couponNotifs), gateway.couponNotifs)
+	}
+
+	gateway.mu.Unlock()
+	couponRepo.mu.Unlock()
+
+	// 3. Wait for the dedup window (100ms) to expire
+	time.Sleep(120 * time.Millisecond)
+
+	// Send the Amazon coupon again after window has expired
+	_ = svc.ProcessIncomingMessage(ctx, 400, msg1)
+	time.Sleep(50 * time.Millisecond)
+
+	couponRepo.mu.Lock()
+	gateway.mu.Lock()
+
+	if len(couponRepo.coupons) != 3 {
+		t.Fatalf("expected 3 coupons after window expiry, got %d", len(couponRepo.coupons))
+	}
+	if len(gateway.couponNotifs) != 3 {
+		t.Fatalf("expected 3 notifications after window expiry, got %d", len(gateway.couponNotifs))
+	}
+
+	gateway.mu.Unlock()
+	couponRepo.mu.Unlock()
+}
+
+func TestMonitorService_CouponDeduplication_ConcurrentBurst(t *testing.T) {
+	t.Parallel()
+
+	userRepo := &mockUserRepo{}
+	interestRepo := &mockInterestRepo{}
+	channelRepo := newMockChannelRepo()
+	_ = channelRepo.UpsertChannel(context.Background(), &domain.TelegramChannel{
+		ChatID:         500,
+		Title:          "Burst Channel",
+		MonitorCoupons: true,
+	})
+
+	matchRepo := &mockMatchRepo{}
+	couponRepo := &mockCouponRepo{}
+	gateway := &mockNotificationGateway{}
+
+	cfg := service.MonitorConfig{
+		WorkerCount:       8,
+		QueueSize:         1024,
+		CouponDedupWindow: 4 * time.Hour,
+	}
+
+	svc := service.NewMonitorService(
+		userRepo,
+		interestRepo,
+		channelRepo,
+		matchRepo,
+		couponRepo,
+		gateway,
+		cfg,
+	)
+
+	ctx := context.Background()
+	_ = svc.RebuildSnapshot(ctx)
+	svc.Start(ctx)
+	defer svc.Stop()
+
+	// 20 concurrent goroutines firing the exact same coupon at the exact same instant
+	var wg sync.WaitGroup
+	const concurrentCouriers = 20
+	msg := "🎟️ Super Cupom Shopee: SHOPEE20 no site https://shopee.com.br/deal"
+
+	for i := 0; i < concurrentCouriers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = svc.ProcessIncomingMessage(ctx, 500, msg)
+		}()
+	}
+	wg.Wait()
+
+	// Wait for worker pool to finish processing
+	time.Sleep(100 * time.Millisecond)
+
+	couponRepo.mu.Lock()
+	defer couponRepo.mu.Unlock()
+	gateway.mu.Lock()
+	defer gateway.mu.Unlock()
+
+	if len(couponRepo.coupons) != 1 {
+		t.Fatalf("expected exactly 1 coupon recorded in burst, got %d", len(couponRepo.coupons))
+	}
+	if len(gateway.couponNotifs) != 1 {
+		t.Fatalf("expected exactly 1 coupon notification in burst, got %d", len(gateway.couponNotifs))
 	}
 }

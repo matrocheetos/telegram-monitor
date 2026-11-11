@@ -16,9 +16,9 @@ import (
 	"time"
 
 	httpAdapter "github.com/matrocheetos/telegram-monitor/internal/adapter/primary/http"
-	"github.com/matrocheetos/telegram-monitor/internal/adapter/secondary/apprise"
 	"github.com/matrocheetos/telegram-monitor/internal/adapter/secondary/crypto"
 	"github.com/matrocheetos/telegram-monitor/internal/adapter/secondary/gotd"
+	"github.com/matrocheetos/telegram-monitor/internal/adapter/secondary/ntfy"
 	"github.com/matrocheetos/telegram-monitor/internal/adapter/secondary/sqlite"
 	"github.com/matrocheetos/telegram-monitor/internal/service"
 )
@@ -107,14 +107,13 @@ func run() error {
 	matchRepo := sqlite.NewMatchHistoryRepository(db)
 	couponRepo := sqlite.NewCouponRepository(db)
 
-	appriseURL := os.Getenv("APPRISE_URL")
-	if appriseURL == "" {
-		appriseURL = "http://localhost:8000"
-	}
 	ntfyURL := os.Getenv("NTFY_URL")
 	if ntfyURL == "" {
 		ntfyURL = "https://ntfy.sh"
 	}
+	ntfyToken := os.Getenv("NTFY_TOKEN")
+	ntfyUsername := os.Getenv("NTFY_USERNAME")
+	ntfyPassword := os.Getenv("NTFY_PASSWORD")
 	ntfyTopicSep := os.Getenv("NTFY_TOPIC_SEPARATOR")
 	if ntfyTopicSep == "" {
 		ntfyTopicSep = "-"
@@ -125,12 +124,13 @@ func run() error {
 		ntfyTopicPrefix = "test-"
 	}
 
-	appriseClient := apprise.NewClient(apprise.Config{
-		AppriseURL:         appriseURL,
-		AppriseKey:         os.Getenv("APPRISE_KEY"),
-		NtfyURL:            ntfyURL,
-		NtfyTopicSeparator: ntfyTopicSep,
-		NtfyTopicPrefix:    ntfyTopicPrefix,
+	ntfyClient := ntfy.NewClient(ntfy.Config{
+		BaseURL:        ntfyURL,
+		Token:          ntfyToken,
+		Username:       ntfyUsername,
+		Password:       ntfyPassword,
+		TopicSeparator: ntfyTopicSep,
+		TopicPrefix:    ntfyTopicPrefix,
 	})
 
 	monitorSvc := service.NewMonitorService(
@@ -139,7 +139,7 @@ func run() error {
 		channelRepo,
 		matchRepo,
 		couponRepo,
-		appriseClient,
+		ntfyClient,
 		service.MonitorConfig{
 			WorkerCount: 4,
 			QueueSize:   1024,

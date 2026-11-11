@@ -413,11 +413,11 @@ func TestSearchAndPagination_EdgeCases(t *testing.T) {
 		"SQL Injection test: '; DROP TABLE matched_products; --",
 	}
 
-	for _, txt := range testTexts {
+	for i, txt := range testTexts {
 		if err := matchRepo.RecordProductMatch(ctx, u.ID, &interest.ID, ch.ChatID, nil, txt); err != nil {
 			t.Fatalf("RecordProductMatch failed for %q: %v", txt, err)
 		}
-		if err := couponRepo.RecordCoupon(ctx, "DISC_10%", "Store & Co.", "https://store.com?ref=1&b=2", ch.ChatID, txt); err != nil {
+		if err := couponRepo.RecordCoupon(ctx, fmt.Sprintf("DISC_%d", i), fmt.Sprintf("Store_%d", i), "https://store.com?ref=1&b=2", ch.ChatID, txt); err != nil {
 			t.Fatalf("RecordCoupon failed for %q: %v", txt, err)
 		}
 	}

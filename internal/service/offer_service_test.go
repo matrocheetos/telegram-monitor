@@ -105,6 +105,10 @@ func (m *mockOfferCouponRepo) RecordCoupon(ctx context.Context, code, storeName,
 	return nil
 }
 
+func (m *mockOfferCouponRepo) HasRecentCoupon(ctx context.Context, code, storeName string, since time.Time) (bool, error) {
+	return false, nil
+}
+
 func (m *mockOfferCouponRepo) ListExtractedCoupons(ctx context.Context, searchQuery string, limit, offset int) ([]domain.ExtractedCoupon, int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

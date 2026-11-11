@@ -31,6 +31,10 @@ func (m *stressMockRepo) RecordCoupon(ctx context.Context, code, storeName, stor
 	return nil
 }
 
+func (m *stressMockRepo) HasRecentCoupon(ctx context.Context, code, storeName string, since time.Time) (bool, error) {
+	return false, nil
+}
+
 func (m *stressMockRepo) ListExtractedCoupons(ctx context.Context, searchQuery string, limit, offset int) ([]domain.ExtractedCoupon, int, error) {
 	return nil, 0, nil
 }
