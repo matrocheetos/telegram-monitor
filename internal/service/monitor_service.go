@@ -19,6 +19,8 @@ var (
 )
 
 type ChannelFlags struct {
+	Title           string
+	Username        string
 	MonitorProducts bool
 	MonitorCoupons  bool
 }
@@ -50,18 +52,20 @@ type jobKind int
 const (
 	jobKindProduct jobKind = iota
 	jobKindCoupon
+	jobKindDebugRecord
 )
 
 type monitorJob struct {
-	kind       jobKind
-	userID     int64
-	interestID int64
-	channelID  int64
-	username   string
-	price      *float64
-	text       string
-	offerURL   string
-	coupon     domain.Coupon
+	kind        jobKind
+	userID      int64
+	interestID  int64
+	channelID   int64
+	username    string
+	price       *float64
+	text        string
+	offerURL    string
+	coupon      domain.Coupon
+	debugRecord *domain.AnalyzedMessageDebugRecord
 }
 
 type MonitorService struct {
@@ -71,6 +75,7 @@ type MonitorService struct {
 	matchRepo           port.MatchHistoryRepository
 	couponRepo          port.CouponRepository
 	notificationGateway port.NotificationGateway
+	debugRepo           port.DebugMessageRepository
 	cfg                 MonitorConfig
 
 	snapshot atomic.Pointer[MatcherSnapshot]
@@ -82,6 +87,18 @@ type MonitorService struct {
 	wg          sync.WaitGroup
 	dedupMu     sync.Mutex
 	couponDedup map[string]time.Time
+}
+
+func (s *MonitorService) SetDebugRepository(repo port.DebugMessageRepository) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.debugRepo = repo
+}
+
+func (s *MonitorService) DebugRepository() port.DebugMessageRepository {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.debugRepo
 }
 
 func NewMonitorService(
@@ -218,6 +235,19 @@ func (s *MonitorService) processJob(ctx context.Context, job monitorJob) {
 				)
 			}
 		}
+	case jobKindDebugRecord:
+		s.mu.Lock()
+		debugRepo := s.debugRepo
+		s.mu.Unlock()
+		if debugRepo != nil && job.debugRecord != nil {
+			if err := debugRepo.RecordAnalyzedMessage(ctx, job.debugRecord); err != nil {
+				slog.Error("failed to record debug analyzed message",
+					"channel_id", job.debugRecord.ChannelID,
+					"telegram_message_id", job.debugRecord.TelegramMessageID,
+					"error", err,
+				)
+			}
+		}
 	}
 }
 
@@ -287,6 +317,8 @@ func (s *MonitorService) RebuildSnapshot(ctx context.Context) error {
 	channelMap := make(map[int64]ChannelFlags, len(channels))
 	for _, ch := range channels {
 		channelMap[ch.ChatID] = ChannelFlags{
+			Title:           ch.Title,
+			Username:        ch.Username,
 			MonitorProducts: ch.MonitorProducts,
 			MonitorCoupons:  ch.MonitorCoupons,
 		}
@@ -324,25 +356,250 @@ func (s *MonitorService) Snapshot() *MatcherSnapshot {
 }
 
 func (s *MonitorService) ProcessIncomingMessage(ctx context.Context, channelID int64, messageText string) error {
+	msg := domain.IncomingTelegramMessage{
+		ChannelID:   channelID,
+		MessageDate: time.Now().UTC(),
+		Text:        messageText,
+	}
+	return s.ProcessIncomingTelegramMessage(ctx, msg)
+}
+
+func (s *MonitorService) ProcessIncomingTelegramMessage(ctx context.Context, msg domain.IncomingTelegramMessage) error {
 	snap := s.snapshot.Load()
 	if snap == nil {
 		return nil
 	}
 
-	flags, ok := snap.Channels[channelID]
-	if !ok || (!flags.MonitorProducts && !flags.MonitorCoupons) {
+	flags, channelKnown := snap.Channels[msg.ChannelID]
+	isMonitored := channelKnown && (flags.MonitorProducts || flags.MonitorCoupons)
+
+	s.mu.Lock()
+	debugRepo := s.debugRepo
+	s.mu.Unlock()
+
+	if debugRepo == nil {
+		if !isMonitored {
+			return nil
+		}
+		if flags.MonitorProducts && len(snap.Interests) > 0 {
+			s.matchProducts(ctx, snap.Interests, msg.ChannelID, msg.Text)
+		}
+		if flags.MonitorCoupons {
+			s.matchCoupons(ctx, msg.ChannelID, msg.Text)
+		}
 		return nil
 	}
 
-	if flags.MonitorProducts && len(snap.Interests) > 0 {
-		s.matchProducts(ctx, snap.Interests, channelID, messageText)
-	}
-
-	if flags.MonitorCoupons {
-		s.matchCoupons(ctx, channelID, messageText)
-	}
-
+	s.processAndDebugTelegramMessage(ctx, snap, flags, channelKnown, msg)
 	return nil
+}
+
+func (s *MonitorService) processAndDebugTelegramMessage(
+	ctx context.Context,
+	snap *MatcherSnapshot,
+	flags ChannelFlags,
+	channelKnown bool,
+	msg domain.IncomingTelegramMessage,
+) {
+	rawText := msg.Text
+	normalizedText := domain.NormalizeText(rawText)
+	tokens := domain.Tokenize(rawText)
+	allPrices := domain.ExtractAllPrices(rawText)
+	pricesFoundCount := len(allPrices)
+
+	var extractedLowestPrice *float64
+	if p, found := domain.ExtractLowestPrice(rawText); found {
+		extractedLowestPrice = &p
+	}
+
+	plainURLs := domain.ExtractAllURLs(rawText)
+	firstURL := domain.ExtractFirstURL(rawText)
+	hasCouponIndicator := domain.HasCouponIndicator(rawText)
+	identifiedStore, identifiedStoreURL := domain.IdentifyStoreFromText(rawText)
+
+	hasCodeEntity := false
+	for _, ent := range msg.Entities {
+		if ent.Type == "code" || ent.Type == "pre" {
+			hasCodeEntity = true
+			break
+		}
+	}
+
+	var matchedInterests []domain.DebugMatchedInterestSummary
+	if channelKnown && flags.MonitorProducts && len(snap.Interests) > 0 && len(tokens) > 0 {
+		tokenSet := domain.BuildTokenSet(tokens)
+		var offerURL string
+		var offerURLExtracted bool
+
+		for i := range snap.Interests {
+			interest := &snap.Interests[i]
+
+			negMatched := false
+			for _, neg := range interest.NegativeTokens {
+				if _, exists := tokenSet[neg]; exists {
+					negMatched = true
+					break
+				}
+			}
+			if negMatched {
+				continue
+			}
+
+			posMatched := true
+			for _, pos := range interest.PositiveTokens {
+				tokFound := false
+				if _, exists := tokenSet[pos]; exists {
+					tokFound = true
+				} else if len(pos) >= 5 {
+					for tok := range tokenSet {
+						if domain.IsLevenshteinLE1(pos, tok) {
+							tokFound = true
+							break
+						}
+					}
+				}
+				if !tokFound {
+					posMatched = false
+					break
+				}
+			}
+			if !posMatched {
+				continue
+			}
+
+			if interest.MaxPrice != nil {
+				if extractedLowestPrice == nil || *extractedLowestPrice > *interest.MaxPrice {
+					continue
+				}
+			}
+
+			if !offerURLExtracted {
+				offerURL = firstURL
+				offerURLExtracted = true
+			}
+
+			matchedInterests = append(matchedInterests, domain.DebugMatchedInterestSummary{
+				InterestID: interest.ID,
+				UserID:     interest.UserID,
+				Term:       interest.RawTerm,
+				MaxPrice:   interest.MaxPrice,
+			})
+
+			job := monitorJob{
+				kind:       jobKindProduct,
+				userID:     interest.UserID,
+				interestID: interest.ID,
+				channelID:  msg.ChannelID,
+				username:   interest.Username,
+				price:      extractedLowestPrice,
+				text:       rawText,
+				offerURL:   offerURL,
+			}
+			s.enqueue(ctx, job)
+		}
+	}
+
+	var extractedCoupons []domain.DebugExtractedCouponSummary
+	var dedupCount int
+	allCoupons := domain.ExtractCoupons(rawText)
+
+	if len(allCoupons) > 0 {
+		seenInMsg := make(map[string]struct{}, len(allCoupons))
+		for _, coupon := range allCoupons {
+			key := strings.ToUpper(strings.TrimSpace(coupon.Code)) + "|" + strings.ToLower(strings.TrimSpace(coupon.StoreName))
+			if _, exists := seenInMsg[key]; exists {
+				continue
+			}
+			seenInMsg[key] = struct{}{}
+
+			isDedup := s.isDuplicateCoupon(ctx, coupon)
+			if isDedup {
+				dedupCount++
+			}
+
+			extractedCoupons = append(extractedCoupons, domain.DebugExtractedCouponSummary{
+				Code:         coupon.Code,
+				StoreName:    coupon.StoreName,
+				StoreURL:     coupon.StoreURL,
+				Deduplicated: isDedup,
+			})
+
+			if channelKnown && flags.MonitorCoupons && !isDedup {
+				job := monitorJob{
+					kind:      jobKindCoupon,
+					channelID: msg.ChannelID,
+					text:      rawText,
+					coupon:    coupon,
+				}
+				s.enqueue(ctx, job)
+			}
+		}
+	}
+
+	var outcome domain.EvaluationOutcome
+	isMonitored := channelKnown && (flags.MonitorProducts || flags.MonitorCoupons)
+	trimmed := strings.TrimSpace(rawText)
+
+	switch {
+	case trimmed == "":
+		outcome = domain.OutcomeEmptyText
+	case !isMonitored:
+		outcome = domain.OutcomeUnmonitoredChannel
+	case len(matchedInterests) > 0 && len(extractedCoupons) > 0:
+		outcome = domain.OutcomeMatchedProductAndCoupon
+	case len(matchedInterests) > 0:
+		outcome = domain.OutcomeMatchedProduct
+	case len(extractedCoupons) > 0:
+		outcome = domain.OutcomeExtractedCoupon
+	case hasCouponIndicator || hasCodeEntity:
+		outcome = domain.OutcomeCouponIndicatorNoCode
+	default:
+		outcome = domain.OutcomeMonitoredNoMatch
+	}
+
+	msgDate := msg.MessageDate
+	if msgDate.IsZero() {
+		msgDate = time.Now().UTC()
+	}
+
+	debugRecord := &domain.AnalyzedMessageDebugRecord{
+		TelegramMessageID:        msg.TelegramMessageID,
+		ChannelID:                msg.ChannelID,
+		ChannelTitle:             flags.Title,
+		ChannelUsername:          flags.Username,
+		MonitorProducts:          flags.MonitorProducts,
+		MonitorCoupons:           flags.MonitorCoupons,
+		RawText:                  rawText,
+		NormalizedText:           normalizedText,
+		Tokens:                   tokens,
+		HasMedia:                 msg.HasMedia,
+		MediaType:                msg.MediaType,
+		TGEntities:               msg.Entities,
+		TGInlineButtons:          msg.InlineButtons,
+		TGWebPageURL:             msg.WebPageURL,
+		PlainURLs:                plainURLs,
+		FirstURL:                 firstURL,
+		AllPrices:                allPrices,
+		PricesFoundCount:         pricesFoundCount,
+		ExtractedLowestPrice:     extractedLowestPrice,
+		HasCouponIndicator:       hasCouponIndicator,
+		IdentifiedStore:          identifiedStore,
+		IdentifiedStoreURL:       identifiedStoreURL,
+		ExtractedCoupons:         extractedCoupons,
+		ExtractedCouponsCount:    len(extractedCoupons),
+		DeduplicatedCouponsCount: dedupCount,
+		MatchedInterests:         matchedInterests,
+		MatchedProductsCount:     len(matchedInterests),
+		EvaluationOutcome:        outcome,
+		MessageDate:              msgDate,
+		AnalyzedAt:               time.Now().UTC(),
+	}
+
+	s.enqueue(ctx, monitorJob{
+		kind:        jobKindDebugRecord,
+		channelID:   msg.ChannelID,
+		debugRecord: debugRecord,
+	})
 }
 
 func (s *MonitorService) matchProducts(ctx context.Context, interests []CompiledInterest, channelID int64, messageText string) {

@@ -45,6 +45,7 @@ type InterestUseCase interface {
 
 type MessageProcessor interface {
 	ProcessIncomingMessage(ctx context.Context, channelID int64, messageText string) error
+	ProcessIncomingTelegramMessage(ctx context.Context, msg domain.IncomingTelegramMessage) error
 }
 
 type SnapshotRebuilder interface {

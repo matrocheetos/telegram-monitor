@@ -679,3 +679,359 @@ func TestMonitorService_CouponDeduplication_ConcurrentBurst(t *testing.T) {
 		t.Fatalf("expected exactly 1 coupon notification in burst, got %d", len(gateway.couponNotifs))
 	}
 }
+
+type mockDebugMessageRepo struct {
+	mu      sync.Mutex
+	records []*domain.AnalyzedMessageDebugRecord
+}
+
+func (m *mockDebugMessageRepo) RecordAnalyzedMessage(ctx context.Context, rec *domain.AnalyzedMessageDebugRecord) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.records = append(m.records, rec)
+	return nil
+}
+
+func (m *mockDebugMessageRepo) CountAnalyzedMessages(ctx context.Context) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return int64(len(m.records)), nil
+}
+
+func (m *mockDebugMessageRepo) PruneOldestDebugMessages(ctx context.Context, maxKeep int64, batchSize int) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if int64(len(m.records)) <= maxKeep {
+		return 0, nil
+	}
+	excess := int64(len(m.records)) - maxKeep
+	if excess > int64(batchSize) {
+		excess = int64(batchSize)
+	}
+	m.records = m.records[excess:]
+	return excess, nil
+}
+
+func TestMonitorService_DebugCollectionDisabledByDefault(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	userRepo := &mockUserRepo{
+		users: []*domain.User{
+			{ID: 1, Username: "alice", NtfyTopic: "promo-alice"},
+		},
+	}
+	interestRepo := &mockInterestRepo{
+		interests: []*domain.UserInterest{
+			{
+				ID:             1,
+				UserID:         1,
+				RawTerm:        "nintendo switch",
+				PositiveTokens: []string{"nintendo", "switch"},
+				Active:         true,
+			},
+		},
+	}
+	channelRepo := &mockChannelRepo{
+		channels: map[int64]*domain.TelegramChannel{
+			-1001: {ChatID: -1001, Title: "Deals", MonitorProducts: true, MonitorCoupons: true},
+		},
+	}
+	matchRepo := &mockMatchRepo{}
+	couponRepo := &mockCouponRepo{}
+	gateway := &mockNotificationGateway{}
+
+	svc := service.NewMonitorService(
+		userRepo,
+		interestRepo,
+		channelRepo,
+		matchRepo,
+		couponRepo,
+		gateway,
+		service.MonitorConfig{WorkerCount: 2, QueueSize: 100},
+	)
+
+	if svc.DebugRepository() != nil {
+		t.Fatalf("expected DebugRepository to be nil by default")
+	}
+
+	_ = svc.RebuildSnapshot(ctx)
+	svc.Start(ctx)
+	defer svc.Stop()
+
+	// Send message
+	_ = svc.ProcessIncomingMessage(ctx, -1001, "Console Nintendo Switch OLED por R$ 1.999 no link https://store.com")
+	time.Sleep(50 * time.Millisecond)
+
+	matchRepo.mu.Lock()
+	defer matchRepo.mu.Unlock()
+	if len(matchRepo.matches) != 1 {
+		t.Fatalf("expected 1 product match, got %d", len(matchRepo.matches))
+	}
+}
+
+func TestMonitorService_DebugCollectionOutcomes(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	maxPrice := 2500.0
+	userRepo := &mockUserRepo{
+		users: []*domain.User{
+			{ID: 1, Username: "alice", NtfyTopic: "promo-alice"},
+		},
+	}
+	interestRepo := &mockInterestRepo{
+		interests: []*domain.UserInterest{
+			{
+				ID:             1,
+				UserID:         1,
+				RawTerm:        "nintendo switch",
+				PositiveTokens: []string{"nintendo", "switch"},
+				MaxPrice:       &maxPrice,
+				Active:         true,
+			},
+		},
+	}
+	channelRepo := &mockChannelRepo{
+		channels: map[int64]*domain.TelegramChannel{
+			-1001: {ChatID: -1001, Title: "All Monitors", Username: "allmonitors", MonitorProducts: true, MonitorCoupons: true},
+			-1002: {ChatID: -1002, Title: "Products Only", Username: "prodsonly", MonitorProducts: true, MonitorCoupons: false},
+			-1003: {ChatID: -1003, Title: "Coupons Only", Username: "couponsonly", MonitorProducts: false, MonitorCoupons: true},
+		},
+	}
+	matchRepo := &mockMatchRepo{}
+	couponRepo := &mockCouponRepo{}
+	gateway := &mockNotificationGateway{}
+	debugRepo := &mockDebugMessageRepo{}
+
+	svc := service.NewMonitorService(
+		userRepo,
+		interestRepo,
+		channelRepo,
+		matchRepo,
+		couponRepo,
+		gateway,
+		service.MonitorConfig{WorkerCount: 4, QueueSize: 500},
+	)
+	svc.SetDebugRepository(debugRepo)
+
+	_ = svc.RebuildSnapshot(ctx)
+	svc.Start(ctx)
+	defer svc.Stop()
+
+	tests := []struct {
+		name            string
+		msg             domain.IncomingTelegramMessage
+		expectedOutcome domain.EvaluationOutcome
+		checkRecord     func(t *testing.T, rec *domain.AnalyzedMessageDebugRecord)
+	}{
+		{
+			name: "product match only",
+			msg: domain.IncomingTelegramMessage{
+				ChannelID:         -1001,
+				TelegramMessageID: 1,
+				Text:              "Oferta Nintendo Switch por R$ 2.199 https://amzn.to/sw",
+			},
+			expectedOutcome: domain.OutcomeMatchedProduct,
+			checkRecord: func(t *testing.T, rec *domain.AnalyzedMessageDebugRecord) {
+				if rec.MatchedProductsCount != 1 {
+					t.Errorf("expected 1 matched product, got %d", rec.MatchedProductsCount)
+				}
+				if rec.ExtractedLowestPrice == nil || *rec.ExtractedLowestPrice != 2199.0 {
+					t.Errorf("expected lowest price 2199.0, got %v", rec.ExtractedLowestPrice)
+				}
+				if rec.FirstURL != "https://amzn.to/sw" {
+					t.Errorf("expected first url 'https://amzn.to/sw', got %q", rec.FirstURL)
+				}
+			},
+		},
+		{
+			name: "coupon extracted only",
+			msg: domain.IncomingTelegramMessage{
+				ChannelID:         -1001,
+				TelegramMessageID: 2,
+				Text:              "Cupom Shopee: DESCONTO10 no link https://shopee.com.br",
+			},
+			expectedOutcome: domain.OutcomeExtractedCoupon,
+			checkRecord: func(t *testing.T, rec *domain.AnalyzedMessageDebugRecord) {
+				if rec.ExtractedCouponsCount != 1 {
+					t.Errorf("expected 1 extracted coupon, got %d", rec.ExtractedCouponsCount)
+				}
+				if len(rec.ExtractedCoupons) > 0 && rec.ExtractedCoupons[0].Code != "DESCONTO10" {
+					t.Errorf("expected code DESCONTO10, got %q", rec.ExtractedCoupons[0].Code)
+				}
+			},
+		},
+		{
+			name: "matched product and coupon",
+			msg: domain.IncomingTelegramMessage{
+				ChannelID:         -1001,
+				TelegramMessageID: 3,
+				Text:              "Console Nintendo Switch por R$ 1.999 usando cupom: GAMES100 na Amazon https://amazon.com.br/dp/switch",
+			},
+			expectedOutcome: domain.OutcomeMatchedProductAndCoupon,
+			checkRecord: func(t *testing.T, rec *domain.AnalyzedMessageDebugRecord) {
+				if rec.MatchedProductsCount != 1 || rec.ExtractedCouponsCount != 1 {
+					t.Errorf("expected 1 match and 1 coupon, got %d matches and %d coupons", rec.MatchedProductsCount, rec.ExtractedCouponsCount)
+				}
+			},
+		},
+		{
+			name: "coupon indicator but no code extracted",
+			msg: domain.IncomingTelegramMessage{
+				ChannelID:         -1001,
+				TelegramMessageID: 4,
+				Text:              "Aproveite o cupom no carrinho para garantir o melhor preço!",
+			},
+			expectedOutcome: domain.OutcomeCouponIndicatorNoCode,
+			checkRecord: func(t *testing.T, rec *domain.AnalyzedMessageDebugRecord) {
+				if !rec.HasCouponIndicator {
+					t.Errorf("expected HasCouponIndicator = true")
+				}
+				if rec.ExtractedCouponsCount != 0 {
+					t.Errorf("expected ExtractedCouponsCount = 0")
+				}
+			},
+		},
+		{
+			name: "monitored channel no match",
+			msg: domain.IncomingTelegramMessage{
+				ChannelID:         -1001,
+				TelegramMessageID: 5,
+				Text:              "Smartphone Galaxy S24 por R$ 4.299 no PIX https://samsung.com",
+			},
+			expectedOutcome: domain.OutcomeMonitoredNoMatch,
+			checkRecord: func(t *testing.T, rec *domain.AnalyzedMessageDebugRecord) {
+				if rec.MatchedProductsCount != 0 || rec.ExtractedCouponsCount != 0 {
+					t.Errorf("expected 0 matches and coupons")
+				}
+			},
+		},
+		{
+			name: "unmonitored channel",
+			msg: domain.IncomingTelegramMessage{
+				ChannelID:         -9999, // Unmonitored
+				TelegramMessageID: 6,
+				Text:              "Promoção em canal não monitorado",
+			},
+			expectedOutcome: domain.OutcomeUnmonitoredChannel,
+			checkRecord: func(t *testing.T, rec *domain.AnalyzedMessageDebugRecord) {
+				if rec.MonitorProducts || rec.MonitorCoupons {
+					t.Errorf("expected channel flags to be false")
+				}
+			},
+		},
+		{
+			name: "empty text",
+			msg: domain.IncomingTelegramMessage{
+				ChannelID:         -1001,
+				TelegramMessageID: 7,
+				Text:              "   ",
+			},
+			expectedOutcome: domain.OutcomeEmptyText,
+			checkRecord: func(t *testing.T, rec *domain.AnalyzedMessageDebugRecord) {
+				if rec.RawText != "   " {
+					t.Errorf("expected raw text '   ', got %q", rec.RawText)
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			beforeCount := len(debugRepo.records)
+			if err := svc.ProcessIncomingTelegramMessage(ctx, tc.msg); err != nil {
+				t.Fatalf("ProcessIncomingTelegramMessage failed: %v", err)
+			}
+
+			// Wait briefly for async worker to record
+			deadline := time.Now().Add(500 * time.Millisecond)
+			for time.Now().Before(deadline) {
+				debugRepo.mu.Lock()
+				n := len(debugRepo.records)
+				debugRepo.mu.Unlock()
+				if n > beforeCount {
+					break
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+
+			debugRepo.mu.Lock()
+			defer debugRepo.mu.Unlock()
+			if len(debugRepo.records) <= beforeCount {
+				t.Fatalf("expected new record in debug repository, count stayed at %d", beforeCount)
+			}
+			last := debugRepo.records[len(debugRepo.records)-1]
+			if last.EvaluationOutcome != tc.expectedOutcome {
+				t.Errorf("expected outcome %q, got %q", tc.expectedOutcome, last.EvaluationOutcome)
+			}
+			if tc.checkRecord != nil {
+				tc.checkRecord(t, last)
+			}
+		})
+	}
+}
+
+func TestMonitorService_DebugCollectionConcurrentBurst(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	channelRepo := &mockChannelRepo{
+		channels: map[int64]*domain.TelegramChannel{
+			-1001: {ChatID: -1001, Title: "Deals", MonitorProducts: true, MonitorCoupons: true},
+		},
+	}
+	debugRepo := &mockDebugMessageRepo{}
+
+	svc := service.NewMonitorService(
+		&mockUserRepo{},
+		&mockInterestRepo{},
+		channelRepo,
+		&mockMatchRepo{},
+		&mockCouponRepo{},
+		&mockNotificationGateway{},
+		service.MonitorConfig{WorkerCount: 8, QueueSize: 500},
+	)
+	svc.SetDebugRepository(debugRepo)
+
+	_ = svc.RebuildSnapshot(ctx)
+	svc.Start(ctx)
+	defer svc.Stop()
+
+	const burstSize = 50
+	var wg sync.WaitGroup
+
+	for i := 0; i < burstSize; i++ {
+		wg.Add(1)
+		msgID := i
+		go func() {
+			defer wg.Done()
+			msg := domain.IncomingTelegramMessage{
+				ChannelID:         -1001,
+				TelegramMessageID: msgID,
+				Text:              fmt.Sprintf("Oferta teste %d cupom CUPOM%d https://store.com/%d", msgID, msgID, msgID),
+			}
+			_ = svc.ProcessIncomingTelegramMessage(ctx, msg)
+		}()
+	}
+	wg.Wait()
+
+	// Wait for queue flush
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		debugRepo.mu.Lock()
+		count := len(debugRepo.records)
+		debugRepo.mu.Unlock()
+		if count == burstSize {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	debugRepo.mu.Lock()
+	defer debugRepo.mu.Unlock()
+	if len(debugRepo.records) != burstSize {
+		t.Fatalf("expected %d debug records recorded in burst, got %d", burstSize, len(debugRepo.records))
+	}
+}
+

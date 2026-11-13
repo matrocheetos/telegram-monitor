@@ -12,7 +12,7 @@ import (
 var (
 	letterDigitBoundaryRegex = regexp.MustCompile(`([a-z])([0-9])`)
 	digitLetterBoundaryRegex = regexp.MustCompile(`([0-9])([a-z])`)
-	priceRegex               = regexp.MustCompile(`R\$\s*([0-9]{1,3}(?:\.[0-9]{3})+,[0-9]{2}|[0-9]+(?:[.,][0-9]{1,2})?|[0-9]{1,3}(?:\.[0-9]{3})+)`)
+	priceRegex               = regexp.MustCompile(`R\$\s*([0-9]{1,3}(?:\.[0-9]{3})+,[0-9]{2}|[0-9]{1,3}(?:\.[0-9]{3})+|[0-9]+(?:[.,][0-9]{1,2})?)`)
 )
 
 type ProductMatch struct {
@@ -137,6 +137,27 @@ func ExtractLowestPrice(text string) (float64, bool) {
 	}
 
 	return lowest, found
+}
+
+func ExtractAllPrices(text string) []float64 {
+	matches := priceRegex.FindAllStringSubmatch(text, -1)
+	if len(matches) == 0 {
+		return []float64{}
+	}
+
+	prices := make([]float64, 0, len(matches))
+	for _, match := range matches {
+		if len(match) < 2 {
+			continue
+		}
+		val, err := parsePrice(match[1])
+		if err != nil || val <= 0 {
+			continue
+		}
+		prices = append(prices, val)
+	}
+
+	return prices
 }
 
 func parsePrice(raw string) (float64, error) {

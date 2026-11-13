@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf16"
 
 	"github.com/gotd/td/session"
 	"github.com/gotd/td/telegram"
@@ -327,7 +328,8 @@ func (m *ClientManager) StartListener(ctx context.Context) error {
 			chatID = -1000000000000 - peer.ChannelID
 		}
 
-		return m.processor.ProcessIncomingMessage(ctx, chatID, msg.Message)
+		incoming := BuildIncomingTelegramMessage(chatID, msg)
+		return m.processor.ProcessIncomingTelegramMessage(ctx, incoming)
 	})
 
 	dispatcher.OnNewMessage(func(ctx context.Context, entities tg.Entities, u *tg.UpdateNewMessage) error {
@@ -349,7 +351,8 @@ func (m *ClientManager) StartListener(ctx context.Context) error {
 			chatID = peer.UserID
 		}
 
-		return m.processor.ProcessIncomingMessage(ctx, chatID, msg.Message)
+		incoming := BuildIncomingTelegramMessage(chatID, msg)
+		return m.processor.ProcessIncomingTelegramMessage(ctx, incoming)
 	})
 
 	sessionStorage := NewSessionStorage(m.repo, m.crypto)
@@ -457,4 +460,155 @@ func (m *ClientManager) SyncDialogs(ctx context.Context) ([]*domain.TelegramChan
 	}
 
 	return channels, nil
+}
+
+func SafeUTF16Substring(u16 []uint16, offset, length int) string {
+	if offset < 0 || offset >= len(u16) || length <= 0 {
+		return ""
+	}
+	end := offset + length
+	if end > len(u16) {
+		end = len(u16)
+	}
+	if end <= offset {
+		return ""
+	}
+	return string(utf16.Decode(u16[offset:end]))
+}
+
+func ExtractTelegramMedia(media tg.MessageMediaClass) (hasMedia bool, mediaType string, webPageURL string) {
+	if media == nil {
+		return false, "", ""
+	}
+	switch m := media.(type) {
+	case *tg.MessageMediaPhoto:
+		return true, "photo", ""
+	case *tg.MessageMediaWebPage:
+		var pageURL string
+		if wp, ok := m.Webpage.(*tg.WebPage); ok {
+			pageURL = wp.URL
+		}
+		return true, "webpage", pageURL
+	case *tg.MessageMediaDocument:
+		return true, "document", ""
+	case *tg.MessageMediaEmpty:
+		return false, "", ""
+	default:
+		return true, "", ""
+	}
+}
+
+func ExtractTelegramEntities(rawText string, entities []tg.MessageEntityClass) []domain.TelegramEntityExcerpt {
+	if len(entities) == 0 {
+		return nil
+	}
+	u16 := utf16.Encode([]rune(rawText))
+	excerpts := make([]domain.TelegramEntityExcerpt, 0, len(entities))
+
+	for _, ent := range entities {
+		var (
+			entityType string
+			entityURL  string
+			offset     int
+			length     int
+		)
+
+		switch e := ent.(type) {
+		case *tg.MessageEntityTextURL:
+			entityType = "text_url"
+			entityURL = e.URL
+			offset = e.Offset
+			length = e.Length
+		case *tg.MessageEntityURL:
+			entityType = "url"
+			offset = e.Offset
+			length = e.Length
+		case *tg.MessageEntityCode:
+			entityType = "code"
+			offset = e.Offset
+			length = e.Length
+		case *tg.MessageEntityPre:
+			entityType = "pre"
+			offset = e.Offset
+			length = e.Length
+		case *tg.MessageEntityBold:
+			entityType = "bold"
+			offset = e.Offset
+			length = e.Length
+		case *tg.MessageEntityStrike:
+			entityType = "strike"
+			offset = e.Offset
+			length = e.Length
+		case *tg.MessageEntityBlockquote:
+			entityType = "blockquote"
+			offset = e.Offset
+			length = e.Length
+		default:
+			continue
+		}
+
+		extractedText := SafeUTF16Substring(u16, offset, length)
+		excerpts = append(excerpts, domain.TelegramEntityExcerpt{
+			Type:   entityType,
+			Offset: offset,
+			Length: length,
+			Text:   extractedText,
+			URL:    entityURL,
+		})
+	}
+	return excerpts
+}
+
+func ExtractTelegramInlineButtons(replyMarkup tg.ReplyMarkupClass) []domain.TelegramInlineButton {
+	if replyMarkup == nil {
+		return nil
+	}
+	rim, ok := replyMarkup.(*tg.ReplyInlineMarkup)
+	if !ok || len(rim.Rows) == 0 {
+		return nil
+	}
+	var buttons []domain.TelegramInlineButton
+	for _, row := range rim.Rows {
+		for _, btn := range row.Buttons {
+			var btnURL string
+			switch bt := btn.Type.(type) {
+			case *tg.InlineButtonTypeURL:
+				btnURL = bt.URL
+			case *tg.InlineButtonTypeURLAuth:
+				btnURL = bt.URL
+			case *tg.InlineButtonTypeWebView:
+				btnURL = bt.URL
+			}
+			if btnURL != "" {
+				buttons = append(buttons, domain.TelegramInlineButton{
+					Text: btn.Text,
+					URL:  btnURL,
+				})
+			}
+		}
+	}
+	return buttons
+}
+
+func BuildIncomingTelegramMessage(chatID int64, msg *tg.Message) domain.IncomingTelegramMessage {
+	if msg == nil {
+		return domain.IncomingTelegramMessage{ChannelID: chatID}
+	}
+	hasMedia, mediaType, webPageURL := ExtractTelegramMedia(msg.Media)
+	entities := ExtractTelegramEntities(msg.Message, msg.Entities)
+	buttons := ExtractTelegramInlineButtons(msg.ReplyMarkup)
+
+	msgDate := time.Unix(int64(msg.Date), 0).UTC()
+
+	return domain.IncomingTelegramMessage{
+		ChannelID:         chatID,
+		TelegramMessageID: msg.ID,
+		MessageDate:       msgDate,
+		Text:              msg.Message,
+		HasMedia:          hasMedia,
+		MediaType:         mediaType,
+		WebPageURL:        webPageURL,
+		Entities:          entities,
+		InlineButtons:     buttons,
+	}
 }

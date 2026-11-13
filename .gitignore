@@ -10,6 +10,7 @@ TASKS.md
 bin/
 dist/
 *.test
+*.bat
 
 *.out
 coverage.out

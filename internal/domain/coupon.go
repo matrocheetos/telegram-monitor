@@ -109,7 +109,28 @@ func ExtractFirstURL(text string) string {
 	if match == "" {
 		return ""
 	}
-	return strings.Trim(match, ".,;:!?")
+	return strings.Trim(match, ".,;:!?')\"")
+}
+
+func ExtractAllURLs(text string) []string {
+	matches := urlRegex.FindAllString(text, -1)
+	if len(matches) == 0 {
+		return []string{}
+	}
+
+	urls := make([]string, 0, len(matches))
+	for _, m := range matches {
+		cleaned := strings.Trim(m, ".,;:!?')\"")
+		if cleaned != "" {
+			urls = append(urls, cleaned)
+		}
+	}
+	return urls
+}
+
+func IdentifyStoreFromText(text string) (string, string) {
+	urls := ExtractAllURLs(text)
+	return identifyStore(text, urls)
 }
 
 func identifyStore(text string, foundURLs []string) (string, string) {

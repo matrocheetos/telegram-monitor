@@ -70,6 +70,12 @@ type CouponRepository interface {
 	CountTotal(ctx context.Context) (int64, error)
 }
 
+type DebugMessageRepository interface {
+	RecordAnalyzedMessage(ctx context.Context, rec *domain.AnalyzedMessageDebugRecord) error
+	CountAnalyzedMessages(ctx context.Context) (int64, error)
+	PruneOldestDebugMessages(ctx context.Context, maxKeep int64, batchSize int) (int64, error)
+}
+
 type CryptoService interface {
 	Encrypt(plaintext []byte) ([]byte, error)
 	Decrypt(ciphertext []byte) ([]byte, error)

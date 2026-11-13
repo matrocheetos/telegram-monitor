@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -48,11 +50,15 @@ func main() {
 }
 
 func run() error {
-	debugFlag := flag.Bool("debug", false, "Enable debug structured logging")
+	dotEnvLoaded, dotEnvErr := loadDotEnv()
+
+	debugFlag := flag.Bool("debug", false, "Enable debug structured logging and local message collection")
 	flag.Parse()
 
+	debugMode := *debugFlag || os.Getenv("DEBUG") == "1" || os.Getenv("DEBUG") == "true" || os.Getenv("DEBUG_COLLECT_MESSAGES") == "true"
+
 	logLevel := slog.LevelInfo
-	if *debugFlag || os.Getenv("DEBUG") == "1" || os.Getenv("DEBUG") == "true" {
+	if debugMode {
 		logLevel = slog.LevelDebug
 	}
 
@@ -63,6 +69,12 @@ func run() error {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+
+	if dotEnvErr != nil {
+		slog.WarnContext(ctx, "failed to load .env file", "error", dotEnvErr)
+	} else if dotEnvLoaded {
+		slog.DebugContext(ctx, "loaded environment variables from .env")
+	}
 
 	slog.InfoContext(ctx, "starting telegram-monitor daemon")
 
@@ -145,6 +157,13 @@ func run() error {
 			QueueSize:   1024,
 		},
 	)
+	if isLocalDebugCollectionEnabled(appEnv, debugMode) {
+		debugRepo := sqlite.NewDebugMessageRepository(db)
+		monitorSvc.SetDebugRepository(debugRepo)
+		slog.InfoContext(ctx, "local telegram message debug collector enabled", "table", "debug_analyzed_messages")
+	} else if debugMode {
+		slog.WarnContext(ctx, "telegram message debug collection is blocked outside local development environment", "app_env", appEnv)
+	}
 	monitorSvc.Start(ctx)
 	defer monitorSvc.Stop()
 
@@ -235,4 +254,70 @@ func run() error {
 
 	slog.InfoContext(ctx, "daemon stopped cleanly")
 	return nil
+}
+
+func isLocalDebugCollectionEnabled(appEnv string, debugMode bool) bool {
+	if !debugMode {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(appEnv)) {
+	case "", "local", "development", "dev":
+		return true
+	default:
+		return false
+	}
+}
+
+func loadDotEnv() (bool, error) {
+	f, err := os.Open(".env")
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	defer func() {
+		_ = f.Close()
+	}()
+
+	if err := loadDotEnvFromReader(f); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func loadDotEnvFromReader(r io.Reader) error {
+	scanner := bufio.NewScanner(r)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		line = strings.TrimPrefix(line, "\xef\xbb\xbf")
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		line = strings.TrimPrefix(line, "export ")
+
+		idx := strings.IndexByte(line, '=')
+		if idx <= 0 {
+			continue
+		}
+
+		key := strings.TrimSpace(line[:idx])
+		if key == "" {
+			continue
+		}
+		val := strings.TrimSpace(line[idx+1:])
+		if len(val) >= 2 {
+			if (val[0] == '"' && val[len(val)-1] == '"') || (val[0] == '\'' && val[len(val)-1] == '\'') {
+				val = val[1 : len(val)-1]
+			}
+		}
+
+		if _, exists := os.LookupEnv(key); exists {
+			continue
+		}
+		if err := os.Setenv(key, val); err != nil {
+			return fmt.Errorf("set env %s: %w", key, err)
+		}
+	}
+	return scanner.Err()
 }
