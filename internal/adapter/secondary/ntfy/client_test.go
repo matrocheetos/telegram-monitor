@@ -384,4 +384,17 @@ func TestClient_ErrorHandling(t *testing.T) {
 			t.Errorf("expected test-promo-cupom, got %s", receivedTopic)
 		}
 	})
+
+	t.Run("LargeSuccessResponseBoundedDrain", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(strings.Repeat("x", 16384)))
+		}))
+		t.Cleanup(server.Close)
+
+		client := ntfy.NewClient(ntfy.Config{BaseURL: server.URL})
+		if err := client.SendProductNotification(context.Background(), "user", "", nil, "text"); err != nil {
+			t.Fatalf("expected bounded drain to succeed, got %v", err)
+		}
+	})
 }

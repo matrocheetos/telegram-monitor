@@ -3,18 +3,26 @@ package http_test
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	adapterHTTP "github.com/matrocheetos/telegram-monitor/internal/adapter/primary/http"
 	"github.com/matrocheetos/telegram-monitor/internal/domain"
+	"go.uber.org/goleak"
 )
+
+func TestMain(m *testing.M) {
+	goleak.VerifyTestMain(m)
+}
 
 type mockSetupUseCase struct {
 	needsSetup bool
@@ -148,6 +156,7 @@ func (m *mockTelegramAuthUseCase) Disconnect(ctx context.Context) error {
 
 type mockChannelUseCase struct {
 	channels []*domain.TelegramChannel
+	batchErr error
 }
 
 func (m *mockChannelUseCase) SyncChannels(ctx context.Context) error {
@@ -168,8 +177,24 @@ func (m *mockChannelUseCase) UpdateChannelFlags(ctx context.Context, chatID int6
 	return nil
 }
 
+func (m *mockChannelUseCase) UpdateChannelsFlagsBatch(ctx context.Context, updates []domain.ChannelFlagUpdate) error {
+	if m.batchErr != nil {
+		return m.batchErr
+	}
+	for _, u := range updates {
+		for _, ch := range m.channels {
+			if ch.ChatID == u.ChatID {
+				ch.MonitorProducts = u.MonitorProducts
+				ch.MonitorCoupons = u.MonitorCoupons
+			}
+		}
+	}
+	return nil
+}
+
 type mockInterestUseCase struct {
 	interests map[int64][]*domain.UserInterest
+	countErr  error
 }
 
 func (m *mockInterestUseCase) AddInterest(ctx context.Context, userID int64, rawTerm string, maxPrice *float64) (*domain.UserInterest, error) {
@@ -198,6 +223,21 @@ func (m *mockInterestUseCase) DeleteInterest(ctx context.Context, userID, intere
 	}
 	m.interests[userID] = updated
 	return nil
+}
+
+func (m *mockInterestUseCase) CountActiveInterestsByUser(ctx context.Context) (map[int64]int, error) {
+	if m.countErr != nil {
+		return nil, m.countErr
+	}
+	counts := make(map[int64]int, len(m.interests))
+	for uid, list := range m.interests {
+		for _, item := range list {
+			if item.Active {
+				counts[uid]++
+			}
+		}
+	}
+	return counts, nil
 }
 
 type mockOfferHistoryUseCase struct {
@@ -966,5 +1006,528 @@ func TestDashboard_NtfyTopicPrefix(t *testing.T) {
 	}
 	if !strings.Contains(resp.UserPublicURL, "test-promo-user-mateus") {
 		t.Errorf("expected test-promo-user-mateus in url, got %s", resp.UserPublicURL)
+	}
+}
+
+func findCookie(cookies []*http.Cookie, name string) *http.Cookie {
+	for _, c := range cookies {
+		if c.Name == name {
+			return c
+		}
+	}
+	return nil
+}
+
+func TestStrictJSONDecoding(t *testing.T) {
+	ctx := context.Background()
+	fix := setupFixture(t, false, true)
+	userCookie := newSessionCookie(fix.regularToken)
+	csrfToken := "test-token"
+
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "reject unknown field",
+			body: `{"term":"switch","unknownField":true}`,
+		},
+		{
+			name: "reject trailing json token",
+			body: `{"term":"switch"}{"extra":1}`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/api/v1/interests", strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", "application/json")
+			req.AddCookie(userCookie)
+			req.AddCookie(newCSRFCookie(csrfToken))
+			req.Header.Set("X-CSRF-Token", csrfToken)
+
+			rec := httptest.NewRecorder()
+			fix.server.ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestCORS_AllowlistAndVary(t *testing.T) {
+	ctx := context.Background()
+	fix := setupFixture(t, false, true)
+
+	t.Run("unlisted origin rejected with Vary header", func(t *testing.T) {
+		req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/api/v1/health", nil)
+		req.Header.Set("Origin", "https://evil.example.com")
+		rec := httptest.NewRecorder()
+		fix.server.ServeHTTP(rec, req)
+
+		if rec.Header().Get("Vary") != "Origin" {
+			t.Fatalf("expected Vary: Origin header, got %q", rec.Header().Get("Vary"))
+		}
+		if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+			t.Fatalf("expected no Access-Control-Allow-Origin for unlisted origin, got %q", got)
+		}
+		if got := rec.Header().Get("Access-Control-Allow-Credentials"); got != "" {
+			t.Fatalf("expected no Access-Control-Allow-Credentials for unlisted origin, got %q", got)
+		}
+	})
+
+	t.Run("wildcard config ignored and rejects arbitrary origin", func(t *testing.T) {
+		srv, err := adapterHTTP.NewServer(
+			adapterHTTP.Config{
+				AppEnv:             "local",
+				CORSAllowedOrigins: "*",
+			},
+			fix.setupUC, fix.authUC, fix.userAdminUC, fix.tgAuthUC, fix.channelUC, fix.interestUC, fix.offerUC,
+		)
+		if err != nil {
+			t.Fatalf("failed to create server: %v", err)
+		}
+		req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/api/v1/health", nil)
+		req.Header.Set("Origin", "https://evil.example.com")
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+
+		if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+			t.Fatalf("expected wildcard config to reject origins, got %q", got)
+		}
+	})
+
+	t.Run("production with empty CORS allows no cross origin", func(t *testing.T) {
+		srv, err := adapterHTTP.NewServer(
+			adapterHTTP.Config{
+				AppEnv: "production",
+			},
+			fix.setupUC, fix.authUC, fix.userAdminUC, fix.tgAuthUC, fix.channelUC, fix.interestUC, fix.offerUC,
+		)
+		if err != nil {
+			t.Fatalf("failed to create server: %v", err)
+		}
+		req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/api/v1/health", nil)
+		req.Header.Set("Origin", "http://localhost:5173")
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+
+		if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+			t.Fatalf("expected no allowed origins in prod with empty config, got %q", got)
+		}
+	})
+
+	t.Run("local with empty CORS defaults to localhost and 127.0.0.1", func(t *testing.T) {
+		srv, err := adapterHTTP.NewServer(
+			adapterHTTP.Config{
+				AppEnv: "local",
+			},
+			fix.setupUC, fix.authUC, fix.userAdminUC, fix.tgAuthUC, fix.channelUC, fix.interestUC, fix.offerUC,
+		)
+		if err != nil {
+			t.Fatalf("failed to create server: %v", err)
+		}
+		for _, origin := range []string{"http://localhost:5173", "http://127.0.0.1:5173"} {
+			req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/api/v1/health", nil)
+			req.Header.Set("Origin", origin)
+			rec := httptest.NewRecorder()
+			srv.ServeHTTP(rec, req)
+			if got := rec.Header().Get("Access-Control-Allow-Origin"); got != origin {
+				t.Fatalf("expected %q, got %q", origin, got)
+			}
+		}
+	})
+}
+
+func TestCookieSecureFlag(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("X-Forwarded-Proto https sets Secure on csrf and session cookies", func(t *testing.T) {
+		fix := setupFixture(t, false, true)
+		//nolint:gosec // dummy token for testing
+		csrfToken := "initial-csrf-token"
+
+		req := newJSONRequest(ctx, http.MethodPost, "/api/v1/auth/login", map[string]string{
+			"username": "admin",
+			"password": "correct",
+		}, nil, csrfToken)
+		req.Header.Set("X-Forwarded-Proto", "https")
+		rec := httptest.NewRecorder()
+		fix.server.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", rec.Code)
+		}
+		res := rec.Result()
+		defer func() { _ = res.Body.Close() }()
+
+		sessCookie := findCookie(res.Cookies(), "session_id")
+		if sessCookie == nil || !sessCookie.Secure {
+			t.Fatalf("expected Secure session_id cookie, got %+v", sessCookie)
+		}
+		csrfCookie := findCookie(res.Cookies(), "csrf_token")
+		if csrfCookie == nil || !csrfCookie.Secure {
+			t.Fatalf("expected Secure csrf_token cookie, got %+v", csrfCookie)
+		}
+	})
+
+	t.Run("CookieSecure true sets Secure even without proxy header", func(t *testing.T) {
+		fix := setupFixture(t, false, true)
+		srv, err := adapterHTTP.NewServer(
+			adapterHTTP.Config{
+				CookieSecure: true,
+			},
+			fix.setupUC, fix.authUC, fix.userAdminUC, fix.tgAuthUC, fix.channelUC, fix.interestUC, fix.offerUC,
+		)
+		if err != nil {
+			t.Fatalf("failed to create server: %v", err)
+		}
+
+		req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/api/v1/auth/session", nil)
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+		res := rec.Result()
+		defer func() { _ = res.Body.Close() }()
+
+		csrfCookie := findCookie(res.Cookies(), "csrf_token")
+		if csrfCookie == nil || !csrfCookie.Secure {
+			t.Fatalf("expected Secure csrf_token cookie when CookieSecure=true, got %+v", csrfCookie)
+		}
+	})
+
+	t.Run("TLS request sets Secure cookie", func(t *testing.T) {
+		fix := setupFixture(t, false, true)
+		req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/api/v1/auth/session", nil)
+		req.TLS = &tls.ConnectionState{}
+		rec := httptest.NewRecorder()
+		fix.server.ServeHTTP(rec, req)
+		res := rec.Result()
+		defer func() { _ = res.Body.Close() }()
+
+		csrfCookie := findCookie(res.Cookies(), "csrf_token")
+		if csrfCookie == nil || !csrfCookie.Secure {
+			t.Fatalf("expected Secure csrf_token cookie on TLS request, got %+v", csrfCookie)
+		}
+	})
+}
+
+func TestCSRFRotationAndLogoutInvalidation(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("setup rotates csrf token and sets 7 day session MaxAge", func(t *testing.T) {
+		fix := setupFixture(t, true, false)
+		oldCSRF := "pre-setup-csrf-token"
+
+		req := newJSONRequest(ctx, http.MethodPost, "/api/v1/setup", map[string]string{
+			"username":        "admin",
+			"password":        "password123",
+			"passwordConfirm": "password123",
+		}, nil, oldCSRF)
+		rec := httptest.NewRecorder()
+		fix.server.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+		}
+		res := rec.Result()
+		defer func() { _ = res.Body.Close() }()
+
+		sessCookie := findCookie(res.Cookies(), "session_id")
+		if sessCookie == nil || sessCookie.MaxAge != int(domain.SessionDuration.Seconds()) {
+			t.Fatalf("expected session_id MaxAge=%d, got %+v", int(domain.SessionDuration.Seconds()), sessCookie)
+		}
+		csrfCookie := findCookie(res.Cookies(), "csrf_token")
+		if csrfCookie == nil || csrfCookie.Value == "" || csrfCookie.Value == oldCSRF {
+			t.Fatalf("expected rotated csrf_token cookie different from %q, got %+v", oldCSRF, csrfCookie)
+		}
+
+		var body adapterHTTP.SessionResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if body.CSRFToken != csrfCookie.Value {
+			t.Fatalf("expected body csrfToken %q to match rotated cookie %q", body.CSRFToken, csrfCookie.Value)
+		}
+	})
+
+	t.Run("login rotates csrf token and logout clears both cookies", func(t *testing.T) {
+		fix := setupFixture(t, false, true)
+		oldCSRF := "pre-login-csrf-token"
+
+		loginReq := newJSONRequest(ctx, http.MethodPost, "/api/v1/auth/login", map[string]string{
+			"username": "admin",
+			"password": "correct",
+		}, nil, oldCSRF)
+		loginRec := httptest.NewRecorder()
+		fix.server.ServeHTTP(loginRec, loginReq)
+		if loginRec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", loginRec.Code)
+		}
+		loginRes := loginRec.Result()
+		defer func() { _ = loginRes.Body.Close() }()
+
+		sessCookie := findCookie(loginRes.Cookies(), "session_id")
+		csrfCookie := findCookie(loginRes.Cookies(), "csrf_token")
+		if sessCookie == nil || sessCookie.MaxAge != int(domain.SessionDuration.Seconds()) {
+			t.Fatalf("expected 7d session_id cookie, got %+v", sessCookie)
+		}
+		if csrfCookie == nil || csrfCookie.Value == "" || csrfCookie.Value == oldCSRF {
+			t.Fatalf("expected rotated csrf_token cookie, got %+v", csrfCookie)
+		}
+
+		var loginBody adapterHTTP.LoginResponse
+		if err := json.Unmarshal(loginRec.Body.Bytes(), &loginBody); err != nil {
+			t.Fatalf("decode login response: %v", err)
+		}
+		if loginBody.CSRFToken != csrfCookie.Value {
+			t.Fatalf("expected login body csrfToken %q to match cookie %q", loginBody.CSRFToken, csrfCookie.Value)
+		}
+
+		logoutReq := newJSONRequest(ctx, http.MethodPost, "/api/v1/auth/logout", nil, sessCookie, csrfCookie.Value)
+		logoutRec := httptest.NewRecorder()
+		fix.server.ServeHTTP(logoutRec, logoutReq)
+		if logoutRec.Code != http.StatusNoContent {
+			t.Fatalf("expected 204, got %d", logoutRec.Code)
+		}
+		logoutRes := logoutRec.Result()
+		defer func() { _ = logoutRes.Body.Close() }()
+
+		clearedSess := findCookie(logoutRes.Cookies(), "session_id")
+		clearedCSRF := findCookie(logoutRes.Cookies(), "csrf_token")
+		if clearedSess == nil || clearedSess.MaxAge != -1 || clearedSess.Value != "" {
+			t.Fatalf("expected cleared session_id cookie, got %+v", clearedSess)
+		}
+		if clearedCSRF == nil || clearedCSRF.MaxAge != -1 || clearedCSRF.Value != "" {
+			t.Fatalf("expected cleared csrf_token cookie, got %+v", clearedCSRF)
+		}
+	})
+}
+
+func TestRateLimiting(t *testing.T) {
+	ctx := context.Background()
+	fix := setupFixture(t, false, true)
+
+	srv, err := adapterHTTP.NewServer(
+		adapterHTTP.Config{
+			RateLimitRequests: 2,
+			RateLimitWindow:   time.Minute,
+		},
+		fix.setupUC, fix.authUC, fix.userAdminUC, fix.tgAuthUC, fix.channelUC, fix.interestUC, fix.offerUC,
+	)
+	if err != nil {
+		t.Fatalf("failed to create server: %v", err)
+	}
+
+	csrfToken := "rl-csrf"
+	for i := 0; i < 2; i++ {
+		req := newJSONRequest(ctx, http.MethodPost, "/api/v1/auth/login", map[string]string{
+			"username": "admin",
+			"password": "wrongpassword",
+		}, nil, csrfToken)
+		req.RemoteAddr = "203.0.113.10:1234"
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d: expected 401, got %d", i+1, rec.Code)
+		}
+	}
+
+	// 3rd attempt from same IP -> 429
+	blockedReq := newJSONRequest(ctx, http.MethodPost, "/api/v1/auth/login", map[string]string{
+		"username": "admin",
+		"password": "correct",
+	}, nil, csrfToken)
+	blockedReq.RemoteAddr = "203.0.113.10:1234"
+	blockedRec := httptest.NewRecorder()
+	srv.ServeHTTP(blockedRec, blockedReq)
+	if blockedRec.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429, got %d: %s", blockedRec.Code, blockedRec.Body.String())
+	}
+
+	retryAfterStr := blockedRec.Header().Get("Retry-After")
+	retryAfter, err := strconv.Atoi(retryAfterStr)
+	if err != nil || retryAfter < 1 {
+		t.Fatalf("expected Retry-After >= 1, got %q", retryAfterStr)
+	}
+
+	var errResp adapterHTTP.ErrorEnvelope
+	if err := json.Unmarshal(blockedRec.Body.Bytes(), &errResp); err != nil {
+		t.Fatalf("decode error envelope: %v", err)
+	}
+	if errResp.Error.Code != "rate_limit_exceeded" {
+		t.Fatalf("expected code rate_limit_exceeded, got %q", errResp.Error.Code)
+	}
+
+	// Different IP is still allowed
+	otherIPReq := newJSONRequest(ctx, http.MethodPost, "/api/v1/auth/login", map[string]string{
+		"username": "admin",
+		"password": "correct",
+	}, nil, csrfToken)
+	otherIPReq.RemoteAddr = "203.0.113.20:5678"
+	otherIPRec := httptest.NewRecorder()
+	srv.ServeHTTP(otherIPRec, otherIPReq)
+	if otherIPRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for different IP, got %d", otherIPRec.Code)
+	}
+
+	// Telegram send-code and verify also enforce rate limit
+	adminCookie := newSessionCookie(fix.adminToken)
+	sendReq := newJSONRequest(ctx, http.MethodPost, "/api/v1/admin/telegram/send-code", map[string]any{
+		"apiId":   123,
+		"apiHash": "abc",
+		"phone":   "+5511999999999",
+	}, adminCookie, csrfToken)
+	sendReq.RemoteAddr = "203.0.113.10:9999"
+	sendRec := httptest.NewRecorder()
+	srv.ServeHTTP(sendRec, sendReq)
+	if sendRec.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 on rate-limited send-code, got %d", sendRec.Code)
+	}
+
+	verifyReq := newJSONRequest(ctx, http.MethodPost, "/api/v1/admin/telegram/verify", map[string]string{
+		"phoneCode": "12345",
+	}, adminCookie, csrfToken)
+	verifyReq.RemoteAddr = "203.0.113.10:9999"
+	verifyRec := httptest.NewRecorder()
+	srv.ServeHTTP(verifyRec, verifyReq)
+	if verifyRec.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 on rate-limited verify, got %d", verifyRec.Code)
+	}
+}
+
+func TestSwaggerProductionGateAndPathNormalization(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("swagger disabled in production even with path traversal", func(t *testing.T) {
+		fix := setupFixture(t, false, true)
+		srv, err := adapterHTTP.NewServer(
+			adapterHTTP.Config{
+				AppEnv: "production",
+			},
+			fix.setupUC, fix.authUC, fix.userAdminUC, fix.tgAuthUC, fix.channelUC, fix.interestUC, fix.offerUC,
+		)
+		if err != nil {
+			t.Fatalf("failed to create server: %v", err)
+		}
+
+		// Unauthenticated request to swagger -> 401 (not exempted)
+		req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/swagger/index.html", nil)
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("expected 401 for unauthenticated /swagger/index.html in prod, got %d", rec.Code)
+		}
+
+		// Path traversal attempt -> 401 (not exempted)
+		travReq := httptest.NewRequestWithContext(ctx, http.MethodGet, "/api/v1/../swagger/index.html", nil)
+		travRec := httptest.NewRecorder()
+		srv.ServeHTTP(travRec, travReq)
+		if travRec.Code != http.StatusUnauthorized {
+			t.Fatalf("expected 401 for traversal to swagger in prod, got %d", travRec.Code)
+		}
+
+		// Authenticated admin request to swagger -> 404 (not mounted)
+		authReq := newJSONRequest(ctx, http.MethodGet, "/swagger/index.html", nil, newSessionCookie(fix.adminToken), "")
+		authRec := httptest.NewRecorder()
+		srv.ServeHTTP(authRec, authReq)
+		if authRec.Code != http.StatusNotFound {
+			t.Fatalf("expected 404 for authenticated /swagger/index.html in prod, got %d", authRec.Code)
+		}
+	})
+
+	t.Run("swagger prefix does not match /swagger-other", func(t *testing.T) {
+		fix := setupFixture(t, true, false)
+		req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/swagger-other", nil)
+		rec := httptest.NewRecorder()
+		fix.server.ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 setup_required for /swagger-other, got %d", rec.Code)
+		}
+	})
+
+	t.Run("path traversal to admin endpoint enforces RBAC", func(t *testing.T) {
+		fix := setupFixture(t, false, true)
+		req := newJSONRequest(ctx, http.MethodGet, "/api/v1/dashboard/../admin/users", nil, newSessionCookie(fix.regularToken), "")
+		rec := httptest.NewRecorder()
+		fix.server.ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 forbidden for traversal to admin endpoint, got %d", rec.Code)
+		}
+	})
+}
+
+func TestOffersEndpoint_TabFiltering(t *testing.T) {
+	ctx := context.Background()
+	fix := setupFixture(t, false, true)
+	userCookie := newSessionCookie(fix.regularToken)
+
+	t.Run("tab=products returns only products and non-nil empty coupons", func(t *testing.T) {
+		req := newJSONRequest(ctx, http.MethodGet, "/api/v1/offers?tab=products", nil, userCookie, "")
+		rec := httptest.NewRecorder()
+		fix.server.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", rec.Code)
+		}
+
+		var resp adapterHTTP.OffersResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode json: %v", err)
+		}
+		if resp.ProductsCount != 1 || len(resp.Products) != 1 {
+			t.Fatalf("expected 1 product, got count=%d len=%d", resp.ProductsCount, len(resp.Products))
+		}
+		if resp.CouponsCount != 0 || resp.Coupons == nil || len(resp.Coupons) != 0 {
+			t.Fatalf("expected empty non-nil coupons slice, got count=%d coupons=%v", resp.CouponsCount, resp.Coupons)
+		}
+	})
+
+	t.Run("tab=coupons returns only coupons and non-nil empty products", func(t *testing.T) {
+		req := newJSONRequest(ctx, http.MethodGet, "/api/v1/offers?tab=coupons", nil, userCookie, "")
+		rec := httptest.NewRecorder()
+		fix.server.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", rec.Code)
+		}
+
+		var resp adapterHTTP.OffersResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode json: %v", err)
+		}
+		if resp.CouponsCount != 1 || len(resp.Coupons) != 1 {
+			t.Fatalf("expected 1 coupon, got count=%d len=%d", resp.CouponsCount, len(resp.Coupons))
+		}
+		if resp.ProductsCount != 0 || resp.Products == nil || len(resp.Products) != 0 {
+			t.Fatalf("expected empty non-nil products slice, got count=%d products=%v", resp.ProductsCount, resp.Products)
+		}
+	})
+
+	t.Run("invalid tab returns 400 invalid_tab", func(t *testing.T) {
+		req := newJSONRequest(ctx, http.MethodGet, "/api/v1/offers?tab=invalid", nil, userCookie, "")
+		rec := httptest.NewRecorder()
+		fix.server.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d", rec.Code)
+		}
+
+		var errResp adapterHTTP.ErrorEnvelope
+		if err := json.Unmarshal(rec.Body.Bytes(), &errResp); err != nil {
+			t.Fatalf("decode error envelope: %v", err)
+		}
+		if errResp.Error.Code != "invalid_tab" {
+			t.Fatalf("expected code invalid_tab, got %q", errResp.Error.Code)
+		}
+	})
+}
+
+func TestAdminUsersGet_PropagatesCountError(t *testing.T) {
+	ctx := context.Background()
+	fix := setupFixture(t, false, true)
+	fix.interestUC.countErr = errors.New("db error")
+
+	req := newJSONRequest(ctx, http.MethodGet, "/api/v1/admin/users", nil, newSessionCookie(fix.adminToken), "")
+	rec := httptest.NewRecorder()
+	fix.server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 when CountActiveInterestsByUser fails, got %d", rec.Code)
 	}
 }

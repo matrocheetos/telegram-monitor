@@ -114,3 +114,29 @@ func TestInterestService_List_And_Delete(t *testing.T) {
 		t.Errorf("expected 1 rebuild snapshot call, got %d", calls)
 	}
 }
+
+func TestInterestService_CountActiveInterestsByUser(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	interestRepo := &mockInterestRepo{
+		interests: []*domain.UserInterest{
+			{ID: 1, UserID: 10, RawTerm: "switch", Active: true},
+			{ID: 2, UserID: 10, RawTerm: "ps5", Active: true},
+			{ID: 3, UserID: 10, RawTerm: "old", Active: false},
+			{ID: 4, UserID: 20, RawTerm: "rtx", Active: true},
+		},
+	}
+	svc := service.NewInterestService(interestRepo, nil)
+
+	counts, err := svc.CountActiveInterestsByUser(ctx)
+	if err != nil {
+		t.Fatalf("CountActiveInterestsByUser failed: %v", err)
+	}
+	if counts[10] != 2 {
+		t.Fatalf("expected 2 active interests for user 10, got %d", counts[10])
+	}
+	if counts[20] != 1 {
+		t.Fatalf("expected 1 active interest for user 20, got %d", counts[20])
+	}
+}

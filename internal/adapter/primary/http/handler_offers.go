@@ -38,6 +38,7 @@ func formatPrice(price *float64) string {
 // @Param        limit   query     int     false  "Items per page limit (max 100)"  default(50)
 // @Param        offset  query     int     false  "Items offset"                    default(0)
 // @Success      200     {object}  OffersResponse
+// @Failure      400     {object}  ErrorEnvelope
 // @Failure      401     {object}  ErrorEnvelope
 // @Failure      500     {object}  ErrorEnvelope
 // @Security     CookieAuth
@@ -46,6 +47,12 @@ func (s *Server) handleOffersGet(w http.ResponseWriter, r *http.Request) {
 	user := GetUser(r.Context())
 	if user == nil {
 		writeErrorJSON(w, http.StatusUnauthorized, "unauthorized", "authentication required")
+		return
+	}
+
+	tab := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("tab")))
+	if tab != "" && tab != "products" && tab != "coupons" {
+		writeErrorJSON(w, http.StatusBadRequest, "invalid_tab", "tab must be products or coupons")
 		return
 	}
 
@@ -68,43 +75,51 @@ func (s *Server) handleOffersGet(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	products, pTotal, err := s.offerHistoryUseCase.ListUserMatchedProducts(r.Context(), user.ID, q, limit, offset)
-	if err != nil {
-		writeDomainError(w, err)
-		return
+	productItems := make([]OfferProductItem, 0)
+	pTotal := 0
+	if tab == "" || tab == "products" {
+		products, total, err := s.offerHistoryUseCase.ListUserMatchedProducts(r.Context(), user.ID, q, limit, offset)
+		if err != nil {
+			writeDomainError(w, err)
+			return
+		}
+		pTotal = total
+		productItems = make([]OfferProductItem, 0, len(products))
+		for _, p := range products {
+			productItems = append(productItems, OfferProductItem{
+				ID:             p.ID,
+				InterestTerm:   p.InterestTerm,
+				ChannelDisplay: formatChannelDisplay(p.ChannelTitle, p.ChannelHandle),
+				ExtractedPrice: p.ExtractedPrice,
+				FormattedPrice: formatPrice(p.ExtractedPrice),
+				MessageText:    p.MessageText,
+				OfferURL:       p.OfferURL,
+				CreatedAt:      p.CreatedAt,
+			})
+		}
 	}
 
-	coupons, cTotal, err := s.offerHistoryUseCase.ListExtractedCoupons(r.Context(), q, limit, offset)
-	if err != nil {
-		writeDomainError(w, err)
-		return
-	}
-
-	productItems := make([]OfferProductItem, 0, len(products))
-	for _, p := range products {
-		productItems = append(productItems, OfferProductItem{
-			ID:             p.ID,
-			InterestTerm:   p.InterestTerm,
-			ChannelDisplay: formatChannelDisplay(p.ChannelTitle, p.ChannelHandle),
-			ExtractedPrice: p.ExtractedPrice,
-			FormattedPrice: formatPrice(p.ExtractedPrice),
-			MessageText:    p.MessageText,
-			OfferURL:       p.OfferURL,
-			CreatedAt:      p.CreatedAt,
-		})
-	}
-
-	couponItems := make([]OfferCouponItem, 0, len(coupons))
-	for _, c := range coupons {
-		couponItems = append(couponItems, OfferCouponItem{
-			ID:             c.ID,
-			Code:           c.Code,
-			StoreName:      c.StoreName,
-			StoreURL:       c.StoreURL,
-			MessageText:    c.MessageText,
-			ChannelDisplay: formatChannelDisplay(c.ChannelTitle, c.ChannelHandle),
-			CreatedAt:      c.CreatedAt,
-		})
+	couponItems := make([]OfferCouponItem, 0)
+	cTotal := 0
+	if tab == "" || tab == "coupons" {
+		coupons, total, err := s.offerHistoryUseCase.ListExtractedCoupons(r.Context(), q, limit, offset)
+		if err != nil {
+			writeDomainError(w, err)
+			return
+		}
+		cTotal = total
+		couponItems = make([]OfferCouponItem, 0, len(coupons))
+		for _, c := range coupons {
+			couponItems = append(couponItems, OfferCouponItem{
+				ID:             c.ID,
+				Code:           c.Code,
+				StoreName:      c.StoreName,
+				StoreURL:       c.StoreURL,
+				MessageText:    c.MessageText,
+				ChannelDisplay: formatChannelDisplay(c.ChannelTitle, c.ChannelHandle),
+				CreatedAt:      c.CreatedAt,
+			})
+		}
 	}
 
 	writeJSON(w, http.StatusOK, OffersResponse{

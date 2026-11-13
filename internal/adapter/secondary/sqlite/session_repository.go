@@ -68,6 +68,14 @@ func (r *SessionRepository) DeleteSession(ctx context.Context, tokenHash string)
 	return nil
 }
 
+func (r *SessionRepository) DeleteUserSessions(ctx context.Context, userID int64) error {
+	query := "DELETE FROM sessions WHERE user_id = ?"
+	if _, err := r.db.ExecContext(ctx, query, userID); err != nil {
+		return fmt.Errorf("sqlite: delete user sessions failed: %w", err)
+	}
+	return nil
+}
+
 func (r *SessionRepository) DeleteExpiredSessions(ctx context.Context) error {
 	query := "DELETE FROM sessions WHERE expires_at <= ?"
 	if _, err := r.db.ExecContext(ctx, query, time.Now().UTC()); err != nil {

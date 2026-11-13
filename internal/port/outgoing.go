@@ -19,6 +19,7 @@ type TelegramCredentials struct {
 type UserRepository interface {
 	CountUsers(ctx context.Context) (int, error)
 	CreateUser(ctx context.Context, user *domain.User) error
+	CreateInitialAdmin(ctx context.Context, user *domain.User) error
 	GetUserByID(ctx context.Context, id int64) (*domain.User, error)
 	GetUserByUsername(ctx context.Context, username string) (*domain.User, error)
 	ListUsers(ctx context.Context) ([]*domain.User, error)
@@ -30,6 +31,7 @@ type SessionRepository interface {
 	CreateSession(ctx context.Context, tokenHash string, userID int64, expiresAt time.Time) error
 	GetSessionUser(ctx context.Context, tokenHash string) (*domain.User, error)
 	DeleteSession(ctx context.Context, tokenHash string) error
+	DeleteUserSessions(ctx context.Context, userID int64) error
 	DeleteExpiredSessions(ctx context.Context) error
 }
 
@@ -41,15 +43,18 @@ type CredentialRepository interface {
 
 type ChannelRepository interface {
 	UpsertChannel(ctx context.Context, ch *domain.TelegramChannel) error
+	UpsertChannelsBatch(ctx context.Context, channels []*domain.TelegramChannel) error
 	GetChannel(ctx context.Context, chatID int64) (*domain.TelegramChannel, error)
 	ListChannels(ctx context.Context) ([]*domain.TelegramChannel, error)
 	UpdateChannelFlags(ctx context.Context, chatID int64, monitorProducts, monitorCoupons bool) error
+	UpdateChannelsFlagsBatch(ctx context.Context, updates []domain.ChannelFlagUpdate) error
 }
 
 type InterestRepository interface {
 	CreateInterest(ctx context.Context, interest *domain.UserInterest) error
 	ListInterestsByUserID(ctx context.Context, userID int64) ([]*domain.UserInterest, error)
 	ListAllActiveInterests(ctx context.Context) ([]*domain.UserInterest, error)
+	CountActiveInterestsByUser(ctx context.Context) (map[int64]int, error)
 	DeleteInterest(ctx context.Context, userID, id int64) error
 }
 

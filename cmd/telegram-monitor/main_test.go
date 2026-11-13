@@ -134,3 +134,136 @@ func TestLoadDotEnvFromReader(t *testing.T) {
 		}
 	}
 }
+
+func TestResolveSecretKey(t *testing.T) {
+	t.Parallel()
+
+	validProdKey := strings.Repeat("a", 32)
+	shortProdKey := strings.Repeat("a", 31)
+
+	tests := []struct {
+		name      string
+		appEnv    string
+		rawKey    string
+		wantKey   string
+		wantError bool
+	}{
+		{
+			name:    "empty env with empty key falls back to dev secret",
+			appEnv:  "",
+			rawKey:  "",
+			wantKey: devFallbackSecretKey,
+		},
+		{
+			name:    "local env with empty key falls back to dev secret",
+			appEnv:  "local",
+			rawKey:  "",
+			wantKey: devFallbackSecretKey,
+		},
+		{
+			name:    "development env with empty key falls back to dev secret",
+			appEnv:  "development",
+			rawKey:  "",
+			wantKey: devFallbackSecretKey,
+		},
+		{
+			name:    "dev env with empty key falls back to dev secret",
+			appEnv:  "dev",
+			rawKey:  "",
+			wantKey: devFallbackSecretKey,
+		},
+		{
+			name:    "test env with empty key falls back to dev secret",
+			appEnv:  "test",
+			rawKey:  "",
+			wantKey: devFallbackSecretKey,
+		},
+		{
+			name:    "local env with custom key returns custom key",
+			appEnv:  "local",
+			rawKey:  "my-custom-local-key",
+			wantKey: "my-custom-local-key",
+		},
+		{
+			name:      "production env with empty key fails",
+			appEnv:    "production",
+			rawKey:    "",
+			wantError: true,
+		},
+		{
+			name:      "prod env with dev fallback key fails",
+			appEnv:    "prod",
+			rawKey:    devFallbackSecretKey,
+			wantError: true,
+		},
+		{
+			name:      "staging env with short key fails",
+			appEnv:    "staging",
+			rawKey:    shortProdKey,
+			wantError: true,
+		},
+		{
+			name:      "production env with 31-byte key fails",
+			appEnv:    "production",
+			rawKey:    shortProdKey,
+			wantError: true,
+		},
+		{
+			name:    "production env with 32-byte key succeeds",
+			appEnv:  "production",
+			rawKey:  validProdKey,
+			wantKey: validProdKey,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := resolveSecretKey(tc.appEnv, tc.rawKey)
+			if tc.wantError {
+				if err == nil {
+					t.Fatalf("expected error, got nil (key=%q)", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.wantKey {
+				t.Fatalf("resolveSecretKey(%q, %q) = %q, want %q", tc.appEnv, tc.rawKey, got, tc.wantKey)
+			}
+		})
+	}
+}
+
+func TestEnvBool(t *testing.T) {
+	tests := []struct {
+		name       string
+		val        string
+		set        bool
+		defaultVal bool
+		want       bool
+	}{
+		{name: "unset returns default true", set: false, defaultVal: true, want: true},
+		{name: "unset returns default false", set: false, defaultVal: false, want: false},
+		{name: "empty returns default", val: "  ", set: true, defaultVal: true, want: true},
+		{name: "true parses true", val: "true", set: true, defaultVal: false, want: true},
+		{name: "1 parses true", val: "1", set: true, defaultVal: false, want: true},
+		{name: "false parses false", val: "false", set: true, defaultVal: true, want: false},
+		{name: "invalid returns default", val: "notabool", set: true, defaultVal: true, want: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			const key = "TEST_ENV_BOOL_KEY"
+			if tc.set {
+				t.Setenv(key, tc.val)
+			} else {
+				_ = os.Unsetenv(key)
+			}
+			if got := envBool(key, tc.defaultVal); got != tc.want {
+				t.Fatalf("envBool = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

@@ -284,3 +284,65 @@ func TestOfferService_StartRetentionJob_Lifecycle(t *testing.T) {
 	// Calling Stop again is idempotent
 	svc.Stop()
 }
+
+type mockCleanupSessionRepo struct {
+	mu           sync.Mutex
+	expiredCalls int
+	err          error
+}
+
+func (m *mockCleanupSessionRepo) CreateSession(ctx context.Context, tokenHash string, userID int64, expiresAt time.Time) error {
+	return nil
+}
+
+func (m *mockCleanupSessionRepo) GetSessionUser(ctx context.Context, tokenHash string) (*domain.User, error) {
+	return nil, domain.ErrUnauthorized
+}
+
+func (m *mockCleanupSessionRepo) DeleteSession(ctx context.Context, tokenHash string) error {
+	return nil
+}
+
+func (m *mockCleanupSessionRepo) DeleteUserSessions(ctx context.Context, userID int64) error {
+	return nil
+}
+
+func (m *mockCleanupSessionRepo) DeleteExpiredSessions(ctx context.Context) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.expiredCalls++
+	return m.err
+}
+
+func TestOfferService_RunRetentionCleanup_PrunesExpiredSessions(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	matchRepo := &mockOfferMatchRepo{totalCount: 1}
+	couponRepo := &mockOfferCouponRepo{totalCount: 1}
+	sessionRepo := &mockCleanupSessionRepo{}
+
+	svc := service.NewOfferService(matchRepo, couponRepo, service.OfferServiceConfig{})
+	svc.SetSessionRepository(sessionRepo)
+
+	if err := svc.RunRetentionCleanup(ctx); err != nil {
+		t.Fatalf("RunRetentionCleanup failed: %v", err)
+	}
+
+	sessionRepo.mu.Lock()
+	calls := sessionRepo.expiredCalls
+	sessionRepo.mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("expected 1 DeleteExpiredSessions call, got %d", calls)
+	}
+
+	expectedErr := errors.New("db failure")
+	sessionRepo.mu.Lock()
+	sessionRepo.err = expectedErr
+	sessionRepo.mu.Unlock()
+
+	err := svc.RunRetentionCleanup(ctx)
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("expected wrapped session prune error, got %v", err)
+	}
+}

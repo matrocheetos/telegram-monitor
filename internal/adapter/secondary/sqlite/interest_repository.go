@@ -175,6 +175,35 @@ func (r *InterestRepository) ListAllActiveInterests(ctx context.Context) ([]*dom
 	return interests, nil
 }
 
+func (r *InterestRepository) CountActiveInterestsByUser(ctx context.Context) (map[int64]int, error) {
+	query := `
+		SELECT user_id, COUNT(*)
+		FROM user_interests
+		WHERE active = 1
+		GROUP BY user_id
+	`
+	rows, err := r.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: count active interests by user failed: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	counts := make(map[int64]int)
+	for rows.Next() {
+		var userID int64
+		var count int
+		if err := rows.Scan(&userID, &count); err != nil {
+			return nil, fmt.Errorf("sqlite: scan active interest count failed: %w", err)
+		}
+		counts[userID] = count
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlite: iterate active interest count rows failed: %w", err)
+	}
+
+	return counts, nil
+}
+
 func (r *InterestRepository) DeleteInterest(ctx context.Context, userID, id int64) error {
 	query := "DELETE FROM user_interests WHERE id = ? AND user_id = ?"
 	res, err := r.db.ExecContext(ctx, query, id, userID)

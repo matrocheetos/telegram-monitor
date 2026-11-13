@@ -38,6 +38,10 @@ linters:
     nolintlint:
       require-explanation: true
       require-specific: true
+    misspell:
+      ignore-rules:
+        - validade
+        - internacional
     revive:
       rules:
         - name: exported

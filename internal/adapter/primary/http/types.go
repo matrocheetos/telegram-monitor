@@ -1,10 +1,13 @@
 package http
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -48,10 +51,25 @@ type ErrorEnvelope struct {
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {
+	if payload == nil {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(status)
+		return
+	}
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(payload); err != nil {
+		slog.Error("failed to encode json response", "error", err)
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":{"code":"internal_error","message":"failed to encode response"}}` + "\n"))
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
-	if payload != nil {
-		_ = json.NewEncoder(w).Encode(payload)
+	if _, err := w.Write(buf.Bytes()); err != nil {
+		slog.Error("failed to write json response", "error", err)
 	}
 }
 
@@ -102,8 +120,12 @@ func readJSON(w http.ResponseWriter, r *http.Request, dst any) error {
 	}()
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil {
 		return err
+	}
+	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return errors.New("invalid json payload: request body must contain a single JSON object")
 	}
 	return nil
 }
@@ -166,6 +188,7 @@ type LoginRequest struct {
 
 type LoginResponse struct {
 	Authenticated bool                    `json:"authenticated"`
+	CSRFToken     string                  `json:"csrfToken,omitempty"`
 	User          UserPayload             `json:"user"`
 	Telegram      *TelegramSessionPayload `json:"telegram"`
 }

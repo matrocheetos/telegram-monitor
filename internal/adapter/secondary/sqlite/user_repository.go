@@ -86,6 +86,57 @@ func (r *UserRepository) CreateUser(ctx context.Context, user *domain.User) erro
 	return nil
 }
 
+func (r *UserRepository) CreateInitialAdmin(ctx context.Context, user *domain.User) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("sqlite: begin initial admin tx failed: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var count int
+	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM users").Scan(&count); err != nil {
+		return fmt.Errorf("sqlite: count users in tx failed: %w", err)
+	}
+	if count > 0 {
+		return domain.ErrSetupAlreadyCompleted
+	}
+
+	now := time.Now().UTC()
+	user.CreatedAt = now
+	user.UpdatedAt = now
+
+	query := `
+		INSERT INTO users (username, password_hash, role, ntfy_topic, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`
+	res, err := tx.ExecContext(ctx, query,
+		user.Username,
+		user.PasswordHash,
+		string(user.Role),
+		user.NtfyTopic,
+		user.CreatedAt,
+		user.UpdatedAt,
+	)
+	if err != nil {
+		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+			return domain.ErrDuplicateEntry
+		}
+		return fmt.Errorf("sqlite: insert initial admin failed: %w", err)
+	}
+
+	id, err := res.LastInsertId()
+	if err != nil {
+		return fmt.Errorf("sqlite: failed to get initial admin insert id: %w", err)
+	}
+	user.ID = id
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("sqlite: commit initial admin tx failed: %w", err)
+	}
+
+	return nil
+}
+
 func (r *UserRepository) GetUserByID(ctx context.Context, id int64) (*domain.User, error) {
 	query := `
 		SELECT id, username, password_hash, role, ntfy_topic, created_at, updated_at

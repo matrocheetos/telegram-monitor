@@ -22,14 +22,21 @@ type OfferServiceConfig struct {
 }
 
 type OfferService struct {
-	matchRepo  port.MatchHistoryRepository
-	couponRepo port.CouponRepository
-	cfg        OfferServiceConfig
+	matchRepo   port.MatchHistoryRepository
+	couponRepo  port.CouponRepository
+	sessionRepo port.SessionRepository
+	cfg         OfferServiceConfig
 
 	mu       sync.Mutex
 	running  atomic.Bool
 	cancelFn context.CancelFunc
 	wg       sync.WaitGroup
+}
+
+func (s *OfferService) SetSessionRepository(repo port.SessionRepository) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sessionRepo = repo
 }
 
 func NewOfferService(
@@ -141,6 +148,19 @@ func (s *OfferService) RunRetentionCleanup(ctx context.Context) error {
 			break
 		}
 		slog.DebugContext(ctx, "pruned batch of excess coupons", "deleted", deleted)
+	}
+
+	s.mu.Lock()
+	sessionRepo := s.sessionRepo
+	s.mu.Unlock()
+
+	if sessionRepo != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := sessionRepo.DeleteExpiredSessions(ctx); err != nil {
+			return fmt.Errorf("prune expired sessions: %w", err)
+		}
 	}
 
 	slog.InfoContext(ctx, "retention cleanup completed successfully")

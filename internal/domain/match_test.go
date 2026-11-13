@@ -96,6 +96,66 @@ func TestExtractLowestPrice(t *testing.T) {
 			expectedPrice: 0,
 			expectedFound: false,
 		},
+		{
+			name:          "multiple dots thousand separator",
+			text:          "Imóvel ou carro por R$ 1.000.000",
+			expectedPrice: 1000000,
+			expectedFound: true,
+		},
+		{
+			name:          "single dot thousand separator",
+			text:          "Monitor gamer por R$ 1.500 à vista",
+			expectedPrice: 1500,
+			expectedFound: true,
+		},
+		{
+			name:          "comma thousand and dot decimal",
+			text:          "Importado por R$ 1,299.00",
+			expectedPrice: 1299.00,
+			expectedFound: true,
+		},
+		{
+			name:          "ignores installment when cash price is present",
+			text:          "R$ 1.899,00 à vista ou 12x de R$ 175,00 sem juros",
+			expectedPrice: 1899.00,
+			expectedFound: true,
+		},
+		{
+			name:          "ignores leading installment when cash price follows",
+			text:          "12x de R$ 175,00 sem juros ou R$ 1.899,00 à vista",
+			expectedPrice: 1899.00,
+			expectedFound: true,
+		},
+		{
+			name:          "installment only returns no cash price",
+			text:          "Parcelado em 12x de R$ 175,00 sem juros",
+			expectedPrice: 0,
+			expectedFound: false,
+		},
+		{
+			name:          "ignores shipping and cashback prices",
+			text:          "Produto R$ 299,90 + Frete R$ 25,00 com cashback de R$ 30,00",
+			expectedPrice: 299.90,
+			expectedFound: true,
+		},
+		{
+			name:          "ancillary only prices return false",
+			text:          "Frete R$ 19,90 | Economize R$ 50,00 | Cupom de R$ 30,00 | Cashback de R$ 20,00",
+			expectedPrice: 0,
+			expectedFound: false,
+		},
+		{
+			name:          "preserves final price after coupon cue with sai por",
+			text:          "Com cupom ABC10 sai por R$ 199,90",
+			expectedPrice: 199.90,
+			expectedFound: true,
+		},
+		{
+			name:          "preserves price on clause after shipping exclamation",
+			text:          "Frete grátis! Apenas R$ 199,90",
+			expectedPrice: 199.90,
+			expectedFound: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -174,6 +234,20 @@ func TestMatchProduct(t *testing.T) {
 			messageText: "Console Nintendo Switch OLED disponível na loja (consulte o site)",
 			wantMatch:   false,
 		},
+		{
+			name:        "installment only price does not satisfy max price",
+			rawTerm:     "switch oled",
+			maxPrice:    &maxPriceSwitch,
+			messageText: "Console Nintendo Switch OLED em 12x de R$ 225,00 sem juros",
+			wantMatch:   false,
+		},
+		{
+			name:        "installment price does not bypass max price check when cash price exceeds limit",
+			rawTerm:     "switch oled",
+			maxPrice:    &maxPriceSwitch,
+			messageText: "Console Nintendo Switch OLED por R$ 2.500,00 ou 12x de R$ 225,00 sem juros",
+			wantMatch:   false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -194,6 +268,18 @@ func TestMatchProduct(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("match extracted price uses cash price instead of installment", func(t *testing.T) {
+		t.Parallel()
+		interest, err := domain.NewUserInterest(1, "switch oled", nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		match, ok := domain.MatchProduct(interest, "Console Nintendo Switch OLED por R$ 1.899,00 ou 12x de R$ 175,00 sem juros")
+		if !ok || match == nil || match.ExtractedPrice == nil || *match.ExtractedPrice != 1899.00 {
+			t.Fatalf("expected ExtractedPrice 1899.00, got %+v", match)
+		}
+	})
 }
 
 func BenchmarkMatchMessage(b *testing.B) {

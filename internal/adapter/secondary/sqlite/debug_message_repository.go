@@ -175,5 +175,9 @@ func (r *DebugMessageRepository) PruneOldestDebugMessages(ctx context.Context, m
 	if err != nil {
 		return 0, fmt.Errorf("prune oldest debug messages: %w", err)
 	}
-	return res.RowsAffected()
+	rowsAffected, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("prune oldest debug messages rows affected: %w", err)
+	}
+	return rowsAffected, nil
 }

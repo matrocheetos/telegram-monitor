@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/matrocheetos/telegram-monitor/internal/domain"
@@ -18,13 +19,12 @@ var (
 	_ port.UserAdminUseCase = (*AuthService)(nil)
 )
 
-const sessionDuration = 7 * 24 * time.Hour
-
 type AuthService struct {
 	userRepo          port.UserRepository
 	sessionRepo       port.SessionRepository
 	hasher            port.PasswordHasher
 	snapshotRebuilder port.SnapshotRebuilder
+	setupMu           sync.Mutex
 }
 
 func NewAuthService(
@@ -50,6 +50,9 @@ func (s *AuthService) NeedsInitialSetup(ctx context.Context) (bool, error) {
 }
 
 func (s *AuthService) CreateInitialAdmin(ctx context.Context, username, password string) (*domain.User, error) {
+	s.setupMu.Lock()
+	defer s.setupMu.Unlock()
+
 	count, err := s.userRepo.CountUsers(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("count users: %w", err)
@@ -72,7 +75,7 @@ func (s *AuthService) CreateInitialAdmin(ctx context.Context, username, password
 		return nil, err
 	}
 
-	if err := s.userRepo.CreateUser(ctx, user); err != nil {
+	if err := s.userRepo.CreateInitialAdmin(ctx, user); err != nil {
 		return nil, fmt.Errorf("create initial admin: %w", err)
 	}
 
@@ -97,7 +100,7 @@ func (s *AuthService) Login(ctx context.Context, username, password string) (*do
 
 	token := hex.EncodeToString(tokenBytes)
 	tokenHash := HashSessionToken(token)
-	expiresAt := time.Now().UTC().Add(sessionDuration)
+	expiresAt := time.Now().UTC().Add(domain.SessionDuration)
 
 	if err := s.sessionRepo.CreateSession(ctx, tokenHash, user.ID, expiresAt); err != nil {
 		return nil, "", fmt.Errorf("create session: %w", err)
@@ -163,6 +166,12 @@ func (s *AuthService) ResetUserPassword(ctx context.Context, userID int64, newPa
 
 	if err := s.userRepo.UpdatePassword(ctx, userID, hash); err != nil {
 		return fmt.Errorf("update user password: %w", err)
+	}
+
+	if s.sessionRepo != nil {
+		if err := s.sessionRepo.DeleteUserSessions(ctx, userID); err != nil {
+			return fmt.Errorf("delete user sessions: %w", err)
+		}
 	}
 
 	return nil

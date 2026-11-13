@@ -38,16 +38,8 @@ func (s *ChannelService) SyncChannels(ctx context.Context) error {
 		return fmt.Errorf("sync dialogs: %w", err)
 	}
 
-	for _, ch := range channels {
-		existing, err := s.channelRepo.GetChannel(ctx, ch.ChatID)
-		if err == nil && existing != nil {
-			ch.MonitorProducts = existing.MonitorProducts
-			ch.MonitorCoupons = existing.MonitorCoupons
-		}
-
-		if err := s.channelRepo.UpsertChannel(ctx, ch); err != nil {
-			return fmt.Errorf("upsert channel %d: %w", ch.ChatID, err)
-		}
+	if err := s.channelRepo.UpsertChannelsBatch(ctx, channels); err != nil {
+		return fmt.Errorf("upsert channels batch: %w", err)
 	}
 
 	if s.snapshotRebuilder != nil {
@@ -66,6 +58,29 @@ func (s *ChannelService) ListChannels(ctx context.Context) ([]*domain.TelegramCh
 func (s *ChannelService) UpdateChannelFlags(ctx context.Context, chatID int64, monitorProducts, monitorCoupons bool) error {
 	if err := s.channelRepo.UpdateChannelFlags(ctx, chatID, monitorProducts, monitorCoupons); err != nil {
 		return fmt.Errorf("update channel flags: %w", err)
+	}
+
+	if s.snapshotRebuilder != nil {
+		if err := s.snapshotRebuilder.RebuildSnapshot(ctx); err != nil {
+			return fmt.Errorf("rebuild snapshot: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func (s *ChannelService) UpdateChannelsFlagsBatch(ctx context.Context, updates []domain.ChannelFlagUpdate) error {
+	if len(updates) == 0 {
+		return nil
+	}
+	for _, u := range updates {
+		if u.ChatID == 0 {
+			return domain.ErrInvalidChannel
+		}
+	}
+
+	if err := s.channelRepo.UpdateChannelsFlagsBatch(ctx, updates); err != nil {
+		return fmt.Errorf("update channels flags batch: %w", err)
 	}
 
 	if s.snapshotRebuilder != nil {

@@ -69,3 +69,7 @@ func (s *InterestService) DeleteInterest(ctx context.Context, userID, interestID
 
 	return nil
 }
+
+func (s *InterestService) CountActiveInterestsByUser(ctx context.Context) (map[int64]int, error) {
+	return s.interestRepo.CountActiveInterestsByUser(ctx)
+}

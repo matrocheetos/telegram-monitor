@@ -2,6 +2,8 @@ package http
 
 import (
 	"net/http"
+	"strings"
+	"time"
 
 	_ "github.com/matrocheetos/telegram-monitor/docs"
 	"github.com/matrocheetos/telegram-monitor/internal/port"
@@ -14,6 +16,10 @@ type Config struct {
 	NtfyTopicSeparator string
 	NtfyTopicPrefix    string
 	CORSAllowedOrigins string
+	AppEnv             string
+	CookieSecure       bool
+	RateLimitRequests  int
+	RateLimitWindow    time.Duration
 }
 
 type Server struct {
@@ -21,6 +27,9 @@ type Server struct {
 	ntfyURL             string
 	ntfyTopicSeparator  string
 	ntfyTopicPrefix     string
+	appEnv              string
+	cookieSecure        bool
+	rateLimiter         *ipRateLimiter
 	setupUseCase        port.SetupUseCase
 	authUseCase         port.AuthUseCase
 	userAdminUseCase    port.UserAdminUseCase
@@ -56,6 +65,9 @@ func NewServer(
 		ntfyURL:             cfg.NtfyURL,
 		ntfyTopicSeparator:  sep,
 		ntfyTopicPrefix:     cfg.NtfyTopicPrefix,
+		appEnv:              cfg.AppEnv,
+		cookieSecure:        cfg.CookieSecure,
+		rateLimiter:         newIPRateLimiter(cfg.RateLimitRequests, cfg.RateLimitWindow),
 		setupUseCase:        setupUseCase,
 		authUseCase:         authUseCase,
 		userAdminUseCase:    userAdminUseCase,
@@ -65,21 +77,41 @@ func NewServer(
 		offerHistoryUseCase: offerHistoryUseCase,
 	}
 
+	allowSwagger := !isProductionEnv(cfg.AppEnv)
 	mux := http.NewServeMux()
+	s.registerRoutes(mux, allowSwagger)
+
+	// Incoming request order: SecurityHeaders -> CORS -> CSRF -> Auth -> FirstBoot -> RBAC -> mux
+	var h http.Handler = mux
+	h = RBAC(allowSwagger)(h)
+	h = FirstBoot(setupUseCase, allowSwagger)(h)
+	h = Auth(authUseCase)(h)
+	h = CSRF(s.isSecureRequest)(h)
+	h = CORS(cfg.CORSAllowedOrigins, cfg.AppEnv)(h)
+	h = SecurityHeaders(h)
+
+	s.handler = h
+	return s, nil
+}
+
+func (s *Server) registerRoutes(mux *http.ServeMux, allowSwagger bool) {
+	rl := rateLimit(s.rateLimiter)
 
 	// Health
 	mux.HandleFunc("GET /api/v1/health", s.handleHealthGet)
 
-	// Swagger documentation UI
-	mux.HandleFunc("GET /swagger", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/swagger/index.html", http.StatusMovedPermanently)
-	})
-	mux.HandleFunc("GET /swagger/", httpSwagger.WrapHandler)
+	// Swagger documentation UI (disabled in production)
+	if allowSwagger {
+		mux.HandleFunc("GET /swagger", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "/swagger/index.html", http.StatusMovedPermanently)
+		})
+		mux.HandleFunc("GET /swagger/", httpSwagger.WrapHandler)
+	}
 
 	// Auth & Setup
 	mux.HandleFunc("GET /api/v1/auth/session", s.handleSessionGet)
 	mux.HandleFunc("POST /api/v1/setup", s.handleSetupPost)
-	mux.HandleFunc("POST /api/v1/auth/login", s.handleLoginPost)
+	mux.Handle("POST /api/v1/auth/login", rl(http.HandlerFunc(s.handleLoginPost)))
 	mux.HandleFunc("POST /api/v1/auth/logout", s.handleLogoutPost)
 
 	// User dashboard & interests
@@ -93,8 +125,8 @@ func NewServer(
 
 	// Admin Telegram MTProto
 	mux.HandleFunc("GET /api/v1/admin/telegram", s.handleAdminTelegramGet)
-	mux.HandleFunc("POST /api/v1/admin/telegram/send-code", s.handleAdminTelegramSendCodePost)
-	mux.HandleFunc("POST /api/v1/admin/telegram/verify", s.handleAdminTelegramVerifyPost)
+	mux.Handle("POST /api/v1/admin/telegram/send-code", rl(http.HandlerFunc(s.handleAdminTelegramSendCodePost)))
+	mux.Handle("POST /api/v1/admin/telegram/verify", rl(http.HandlerFunc(s.handleAdminTelegramVerifyPost)))
 	mux.HandleFunc("POST /api/v1/admin/telegram/disconnect", s.handleAdminTelegramDisconnectPost)
 
 	// Admin Channels
@@ -107,19 +139,13 @@ func NewServer(
 	mux.HandleFunc("POST /api/v1/admin/users", s.handleAdminUsersCreatePost)
 	mux.HandleFunc("PUT /api/v1/admin/users/{id}/password", s.handleAdminUsersPasswordPut)
 	mux.HandleFunc("DELETE /api/v1/admin/users/{id}", s.handleAdminUsersDelete)
+}
 
-	// Middlewares chain:
-	// Incoming request order: SecurityHeaders -> CORS -> CSRF -> Auth -> FirstBoot -> RBAC -> mux
-	var h http.Handler = mux
-	h = RBAC(h)
-	h = FirstBoot(setupUseCase)(h)
-	h = Auth(authUseCase)(h)
-	h = CSRF(h)
-	h = CORS(cfg.CORSAllowedOrigins)(h)
-	h = SecurityHeaders(h)
-
-	s.handler = h
-	return s, nil
+func (s *Server) isSecureRequest(r *http.Request) bool {
+	return s.cookieSecure ||
+		isProductionEnv(s.appEnv) ||
+		r.TLS != nil ||
+		strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {

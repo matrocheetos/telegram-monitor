@@ -5,6 +5,12 @@ import (
 	"time"
 )
 
+type ChannelFlagUpdate struct {
+	ChatID          int64
+	MonitorProducts bool
+	MonitorCoupons  bool
+}
+
 type TelegramChannel struct {
 	ChatID          int64     `json:"chat_id" db:"chat_id"`
 	AccessHash      int64     `json:"access_hash" db:"access_hash"`

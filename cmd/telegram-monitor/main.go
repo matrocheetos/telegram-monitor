@@ -42,6 +42,11 @@ import (
 // @name X-CSRF-Token
 // @description Double-submit CSRF token header for mutating requests.
 
+const (
+	devFallbackSecretKey         = "telegram-monitor-dev-insecure-secret-key-change-in-prod"
+	minProductionSecretKeyLength = 32
+)
+
 func main() {
 	if err := run(); err != nil {
 		slog.Error("daemon terminated with error", "error", err)
@@ -78,9 +83,13 @@ func run() error {
 
 	slog.InfoContext(ctx, "starting telegram-monitor daemon")
 
-	secretKey := os.Getenv("APP_SECRET_KEY")
-	if secretKey == "" {
-		secretKey = "telegram-monitor-dev-insecure-secret-key-change-in-prod"
+	appEnv := strings.ToLower(strings.TrimSpace(os.Getenv("APP_ENV")))
+	rawSecretKey := os.Getenv("APP_SECRET_KEY")
+	secretKey, err := resolveSecretKey(appEnv, rawSecretKey)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(rawSecretKey) == "" {
 		slog.WarnContext(ctx, "APP_SECRET_KEY environment variable is not set; using development fallback key")
 	}
 
@@ -91,7 +100,7 @@ func run() error {
 
 	if dir := filepath.Dir(dbPath); dir != "" && dir != "." {
 		cleanDir := filepath.Clean(dir)
-		//nolint:gosec // database directory path is from trusted configuration
+		// #nosec G703 -- database directory path is from trusted configuration
 		if err := os.MkdirAll(cleanDir, 0750); err != nil {
 			return fmt.Errorf("create database directory %s: %w", cleanDir, err)
 		}
@@ -131,7 +140,6 @@ func run() error {
 		ntfyTopicSep = "-"
 	}
 	ntfyTopicPrefix := os.Getenv("NTFY_TOPIC_PREFIX")
-	appEnv := strings.ToLower(os.Getenv("APP_ENV"))
 	if ntfyTopicPrefix == "" && (appEnv == "development" || appEnv == "local" || appEnv == "dev" || appEnv == "test") {
 		ntfyTopicPrefix = "test-"
 	}
@@ -196,6 +204,7 @@ func run() error {
 		MaxKeep:       100000,
 		BatchSize:     1000,
 	})
+	offerSvc.SetSessionRepository(sessionRepo)
 	offerSvc.StartRetentionJob(ctx, 1*time.Hour)
 	defer offerSvc.Stop()
 
@@ -213,6 +222,8 @@ func run() error {
 			NtfyTopicSeparator: ntfyTopicSep,
 			NtfyTopicPrefix:    ntfyTopicPrefix,
 			CORSAllowedOrigins: os.Getenv("CORS_ALLOWED_ORIGINS"),
+			AppEnv:             appEnv,
+			CookieSecure:       envBool("COOKIE_SECURE", false),
 		},
 		authSvc,
 		authSvc,
@@ -254,6 +265,47 @@ func run() error {
 
 	slog.InfoContext(ctx, "daemon stopped cleanly")
 	return nil
+}
+
+func isLocalEnv(appEnv string) bool {
+	switch strings.ToLower(strings.TrimSpace(appEnv)) {
+	case "", "local", "development", "dev", "test":
+		return true
+	default:
+		return false
+	}
+}
+
+func resolveSecretKey(appEnv, rawKey string) (string, error) {
+	if isLocalEnv(appEnv) {
+		if strings.TrimSpace(rawKey) == "" {
+			return devFallbackSecretKey, nil
+		}
+		return rawKey, nil
+	}
+
+	if strings.TrimSpace(rawKey) == "" {
+		return "", errors.New("APP_SECRET_KEY is required in non-local environments")
+	}
+	if rawKey == devFallbackSecretKey {
+		return "", errors.New("APP_SECRET_KEY must not use the development fallback key in non-local environments")
+	}
+	if len(rawKey) < minProductionSecretKeyLength {
+		return "", fmt.Errorf("APP_SECRET_KEY must be at least %d bytes in non-local environments", minProductionSecretKeyLength)
+	}
+	return rawKey, nil
+}
+
+func envBool(key string, defaultVal bool) bool {
+	val := strings.TrimSpace(os.Getenv(key))
+	if val == "" {
+		return defaultVal
+	}
+	parsed, err := strconv.ParseBool(val)
+	if err != nil {
+		return defaultVal
+	}
+	return parsed
 }
 
 func isLocalDebugCollectionEnabled(appEnv string, debugMode bool) bool {

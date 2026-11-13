@@ -76,9 +76,12 @@ func (h *Argon2idHasher) VerifyPassword(password, encodedHash string) (bool, err
 	if _, err := fmt.Sscanf(parts[3], "m=%d,t=%d,p=%d", &memory, &iterTime, &threads); err != nil {
 		return false, ErrInvalidHashFormat
 	}
+	if memory == 0 || iterTime == 0 || threads == 0 {
+		return false, ErrInvalidHashFormat
+	}
 
 	salt, err := base64.RawStdEncoding.DecodeString(parts[4])
-	if err != nil {
+	if err != nil || len(salt) == 0 {
 		return false, ErrInvalidHashFormat
 	}
 

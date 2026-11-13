@@ -124,3 +124,53 @@ func TestChannelService_UpdateFlags(t *testing.T) {
 		t.Errorf("expected 1 rebuild snapshot call, got %d", calls)
 	}
 }
+
+func TestChannelService_UpdateChannelsFlagsBatch(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	channelRepo := newMockChannelRepo()
+	_ = channelRepo.UpsertChannel(ctx, &domain.TelegramChannel{ChatID: 3001, Title: "Chan 1"})
+	_ = channelRepo.UpsertChannel(ctx, &domain.TelegramChannel{ChatID: 3002, Title: "Chan 2"})
+
+	rebuilder := &mockSnapshotRebuilder{}
+	svc := service.NewChannelService(channelRepo, &mockTelegramClient{connected: true}, rebuilder)
+
+	err := svc.UpdateChannelsFlagsBatch(ctx, []domain.ChannelFlagUpdate{
+		{ChatID: 3001, MonitorProducts: true, MonitorCoupons: false},
+		{ChatID: 3002, MonitorProducts: false, MonitorCoupons: true},
+	})
+	if err != nil {
+		t.Fatalf("UpdateChannelsFlagsBatch failed: %v", err)
+	}
+
+	ch1, _ := channelRepo.GetChannel(ctx, 3001)
+	ch2, _ := channelRepo.GetChannel(ctx, 3002)
+	if !ch1.MonitorProducts || ch1.MonitorCoupons {
+		t.Fatalf("unexpected flags for 3001: %+v", ch1)
+	}
+	if ch2.MonitorProducts || !ch2.MonitorCoupons {
+		t.Fatalf("unexpected flags for 3002: %+v", ch2)
+	}
+
+	rebuilder.mu.Lock()
+	calls := rebuilder.calls
+	rebuilder.mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("expected 1 snapshot rebuild, got %d", calls)
+	}
+
+	err = svc.UpdateChannelsFlagsBatch(ctx, []domain.ChannelFlagUpdate{
+		{ChatID: 0, MonitorProducts: true},
+	})
+	if !errors.Is(err, domain.ErrInvalidChannel) {
+		t.Fatalf("expected ErrInvalidChannel for chatID 0, got %v", err)
+	}
+
+	err = svc.UpdateChannelsFlagsBatch(ctx, []domain.ChannelFlagUpdate{
+		{ChatID: 9999, MonitorProducts: true},
+	})
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for unknown channel, got %v", err)
+	}
+}

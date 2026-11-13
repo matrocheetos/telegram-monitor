@@ -7,6 +7,7 @@ require (
 	github.com/ncruces/go-sqlite3 v0.37.0
 	github.com/swaggo/http-swagger v1.3.4
 	github.com/swaggo/swag v1.16.6
+	go.uber.org/goleak v1.3.0
 	golang.org/x/crypto v0.58.1-0.20261009181718-2f1f834330b2
 	golang.org/x/text v0.44.0
 )

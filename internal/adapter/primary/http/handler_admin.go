@@ -1,6 +1,7 @@
 package http
 
 import (
+	"log/slog"
 	"net/http"
 	"strconv"
 
@@ -96,7 +97,9 @@ func (s *Server) handleAdminTelegramVerifyPost(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	_ = s.channelUseCase.SyncChannels(r.Context())
+	if err := s.channelUseCase.SyncChannels(r.Context()); err != nil {
+		slog.WarnContext(r.Context(), "initial channel sync after login failed", "error", err)
+	}
 
 	connected, phoneMasked, err := s.telegramAuthUseCase.GetConnectionStatus(r.Context())
 	if err != nil {
@@ -254,11 +257,17 @@ func (s *Server) handleAdminChannelsUpdatePut(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	updates := make([]domain.ChannelFlagUpdate, 0, len(req.Channels))
 	for _, item := range req.Channels {
-		if err := s.channelUseCase.UpdateChannelFlags(r.Context(), item.ChatID, item.MonitorProducts, item.MonitorCoupons); err != nil {
-			writeDomainError(w, err)
-			return
-		}
+		updates = append(updates, domain.ChannelFlagUpdate{
+			ChatID:          item.ChatID,
+			MonitorProducts: item.MonitorProducts,
+			MonitorCoupons:  item.MonitorCoupons,
+		})
+	}
+	if err := s.channelUseCase.UpdateChannelsFlagsBatch(r.Context(), updates); err != nil {
+		writeDomainError(w, err)
+		return
 	}
 
 	writeJSON(w, http.StatusOK, UpdatedResponse{
@@ -283,18 +292,14 @@ func (s *Server) handleAdminUsersGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	counts, err := s.interestUseCase.CountActiveInterestsByUser(r.Context())
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+
 	items := make([]AdminUserItem, 0, len(users))
 	for _, u := range users {
-		interests, err := s.interestUseCase.ListUserInterests(r.Context(), u.ID)
-		activeCount := 0
-		if err == nil {
-			for _, in := range interests {
-				if in.Active {
-					activeCount++
-				}
-			}
-		}
-
 		topic := s.ntfyTopicPrefix + u.NtfyTopic
 		items = append(items, AdminUserItem{
 			ID:                   u.ID,
@@ -302,7 +307,7 @@ func (s *Server) handleAdminUsersGet(w http.ResponseWriter, r *http.Request) {
 			Role:                 u.Role,
 			NtfyTopic:            topic,
 			NormalizedNtfyTopic:  normalizeTopic(topic, s.ntfyTopicSeparator),
-			ActiveInterestsCount: activeCount,
+			ActiveInterestsCount: counts[u.ID],
 			CreatedAt:            u.CreatedAt,
 		})
 	}

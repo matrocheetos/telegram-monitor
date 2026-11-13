@@ -196,7 +196,10 @@ func (c *Client) publish(ctx context.Context, payload publishPayload) error {
 	if err != nil {
 		return fmt.Errorf("ntfy: execute request: %w", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		_ = resp.Body.Close()
+	}()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))

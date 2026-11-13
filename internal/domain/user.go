@@ -12,6 +12,7 @@ const (
 	RoleUser  Role = "user"
 
 	MinPasswordLength = 8
+	SessionDuration   = 7 * 24 * time.Hour
 )
 
 var usernameRegex = regexp.MustCompile(`^[a-z0-9_.-]{3,32}$`)

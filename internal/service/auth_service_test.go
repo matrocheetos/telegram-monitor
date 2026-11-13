@@ -54,6 +54,17 @@ func (m *mockSessionRepo) DeleteSession(ctx context.Context, tokenHash string) e
 	return nil
 }
 
+func (m *mockSessionRepo) DeleteUserSessions(ctx context.Context, userID int64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for k, u := range m.sessions {
+		if u.ID == userID {
+			delete(m.sessions, k)
+		}
+	}
+	return nil
+}
+
 func (m *mockSessionRepo) DeleteExpiredSessions(ctx context.Context) error {
 	return nil
 }
@@ -253,5 +264,93 @@ func TestAuthService_UserAdminCRUD(t *testing.T) {
 	rebuilder.mu.Unlock()
 	if calls != 1 {
 		t.Errorf("expected 1 rebuild snapshot call, got %d", calls)
+	}
+}
+
+func TestAuthService_CreateInitialAdmin_Concurrency(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	userRepo := &mockUserRepo{}
+	sessionRepo := newMockSessionRepo()
+	hasher := &mockPasswordHasher{}
+	svc := service.NewAuthService(userRepo, sessionRepo, hasher, nil)
+
+	const goroutines = 10
+	var wg sync.WaitGroup
+	errs := make(chan error, goroutines)
+
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := svc.CreateInitialAdmin(ctx, "admin", "password123")
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+
+	successCount := 0
+	alreadyCompletedCount := 0
+	for err := range errs {
+		switch {
+		case err == nil:
+			successCount++
+		case errors.Is(err, domain.ErrSetupAlreadyCompleted):
+			alreadyCompletedCount++
+		default:
+			t.Fatalf("unexpected error during concurrent setup: %v", err)
+		}
+	}
+
+	if successCount != 1 {
+		t.Fatalf("expected exactly 1 setup success, got %d", successCount)
+	}
+	if alreadyCompletedCount != goroutines-1 {
+		t.Fatalf("expected %d ErrSetupAlreadyCompleted errors, got %d", goroutines-1, alreadyCompletedCount)
+	}
+}
+
+func TestAuthService_ResetUserPassword_RevokesSessions(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	userRepo := &mockUserRepo{}
+	sessionRepo := newMockSessionRepo()
+	hasher := &mockPasswordHasher{}
+	svc := service.NewAuthService(userRepo, sessionRepo, hasher, nil)
+
+	u, err := svc.CreateUser(ctx, "bob", "initialpass123", domain.RoleUser)
+	if err != nil {
+		t.Fatalf("CreateUser failed: %v", err)
+	}
+
+	_, token1, err := svc.Login(ctx, "bob", "initialpass123")
+	if err != nil {
+		t.Fatalf("Login 1 failed: %v", err)
+	}
+	_, token2, err := svc.Login(ctx, "bob", "initialpass123")
+	if err != nil {
+		t.Fatalf("Login 2 failed: %v", err)
+	}
+
+	if _, err := svc.AuthenticateSession(ctx, token1); err != nil {
+		t.Fatalf("expected token1 valid before reset, got %v", err)
+	}
+
+	if err := svc.ResetUserPassword(ctx, u.ID, "newpass456"); err != nil {
+		t.Fatalf("ResetUserPassword failed: %v", err)
+	}
+
+	if _, err := svc.AuthenticateSession(ctx, token1); !errors.Is(err, domain.ErrUnauthorized) {
+		t.Fatalf("expected token1 revoked after password reset, got %v", err)
+	}
+	if _, err := svc.AuthenticateSession(ctx, token2); !errors.Is(err, domain.ErrUnauthorized) {
+		t.Fatalf("expected token2 revoked after password reset, got %v", err)
+	}
+
+	if _, _, err := svc.Login(ctx, "bob", "newpass456"); err != nil {
+		t.Fatalf("expected login with new password to succeed, got %v", err)
 	}
 }

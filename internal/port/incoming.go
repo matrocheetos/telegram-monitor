@@ -35,12 +35,14 @@ type ChannelUseCase interface {
 	SyncChannels(ctx context.Context) error
 	ListChannels(ctx context.Context) ([]*domain.TelegramChannel, error)
 	UpdateChannelFlags(ctx context.Context, chatID int64, monitorProducts, monitorCoupons bool) error
+	UpdateChannelsFlagsBatch(ctx context.Context, updates []domain.ChannelFlagUpdate) error
 }
 
 type InterestUseCase interface {
 	AddInterest(ctx context.Context, userID int64, rawTerm string, maxPrice *float64) (*domain.UserInterest, error)
 	ListUserInterests(ctx context.Context, userID int64) ([]*domain.UserInterest, error)
 	DeleteInterest(ctx context.Context, userID, interestID int64) error
+	CountActiveInterestsByUser(ctx context.Context) (map[int64]int, error)
 }
 
 type MessageProcessor interface {

@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"golang.org/x/text/unicode/norm"
 )
@@ -12,7 +13,14 @@ import (
 var (
 	letterDigitBoundaryRegex = regexp.MustCompile(`([a-z])([0-9])`)
 	digitLetterBoundaryRegex = regexp.MustCompile(`([0-9])([a-z])`)
-	priceRegex               = regexp.MustCompile(`R\$\s*([0-9]{1,3}(?:\.[0-9]{3})+,[0-9]{2}|[0-9]{1,3}(?:\.[0-9]{3})+|[0-9]+(?:[.,][0-9]{1,2})?)`)
+	priceRegex               = regexp.MustCompile(`R\$\s*([0-9]{1,3}(?:\.[0-9]{3})+,[0-9]{2}|[0-9]{1,3}(?:,[0-9]{3})+\.[0-9]{2}|[0-9]{1,3}(?:\.[0-9]{3})+|[0-9]+(?:[.,][0-9]{1,2})?)`)
+	installmentContextRegex  = regexp.MustCompile(`(?:^|\s)\d{1,2}\s*x(?:\s|$)`)
+	alwaysSecondaryTokens    = map[string]struct{}{
+		"parcela": {}, "parcelas": {}, "frete": {}, "envio": {}, "cashback": {},
+	}
+	discountContextTokens = map[string]struct{}{
+		"desconto": {}, "cupom": {}, "cupons": {}, "off": {}, "economize": {}, "economia": {},
+	}
 )
 
 type ProductMatch struct {
@@ -111,22 +119,100 @@ func IsLevenshteinLE1(s1, s2 string) bool {
 	return mismatches+(l2-j) <= 1
 }
 
+func extractPriceClausePrefix(text string, prevMatchEnd, matchStart int) string {
+	lineStart := strings.LastIndexAny(text[:matchStart], "\r\n") + 1
+	boundStart := lineStart
+	if prevMatchEnd > boundStart {
+		boundStart = prevMatchEnd
+	}
+	if matchStart-boundStart > 48 {
+		boundStart = matchStart - 48
+	}
+	for boundStart < matchStart && !utf8.RuneStart(text[boundStart]) {
+		boundStart++
+	}
+
+	raw := text[boundStart:matchStart]
+	for i := len(raw) - 1; i >= 0; i-- {
+		switch raw[i] {
+		case '!', '?', ';', '|':
+			return raw[i+1:]
+		case ',', '.':
+			// Split on sentence/clause punctuation while ignoring decimal separators.
+			if i+1 >= len(raw) || raw[i+1] < '0' || raw[i+1] > '9' {
+				return raw[i+1:]
+			}
+		}
+	}
+
+	return raw
+}
+
+func isSecondaryPriceContext(text string, prevMatchEnd, matchStart int) bool {
+	clause := extractPriceClausePrefix(text, prevMatchEnd, matchStart)
+	norm := NormalizeText(clause)
+	if norm == "" {
+		return false
+	}
+
+	if idx := strings.LastIndex(norm, " ou "); idx >= 0 {
+		norm = norm[idx+4:]
+	} else if norm == "ou" || strings.HasSuffix(norm, " ou") {
+		return false
+	} else if strings.HasPrefix(norm, "ou ") {
+		norm = norm[3:]
+	}
+
+	if norm == "" {
+		return false
+	}
+
+	if installmentContextRegex.MatchString(norm) || strings.Contains(norm, "sem juros") {
+		return true
+	}
+
+	tokens := strings.Fields(norm)
+	hasDiscountCue := false
+	for _, tok := range tokens {
+		if _, exists := alwaysSecondaryTokens[tok]; exists {
+			return true
+		}
+		if _, exists := discountContextTokens[tok]; exists {
+			hasDiscountCue = true
+		}
+	}
+
+	if hasDiscountCue {
+		if strings.Contains(norm, "sai por") || strings.Contains(norm, "fica por") || strings.Contains(norm, "saindo por") {
+			return false
+		}
+		return true
+	}
+
+	return false
+}
+
 func ExtractLowestPrice(text string) (float64, bool) {
-	matches := priceRegex.FindAllStringSubmatch(text, -1)
+	matches := priceRegex.FindAllStringSubmatchIndex(text, -1)
 	if len(matches) == 0 {
 		return 0, false
 	}
 
 	var lowest float64
 	found := false
+	prevMatchEnd := 0
 
 	for _, match := range matches {
-		if len(match) < 2 {
+		if len(match) < 4 {
 			continue
 		}
-		raw := match[1]
+		matchStart, matchEnd := match[0], match[1]
+		raw := text[match[2]:match[3]]
 		val, err := parsePrice(raw)
-		if err != nil || val <= 0 {
+		isSecondary := isSecondaryPriceContext(text, prevMatchEnd, matchStart)
+		prevMatchEnd = matchEnd
+
+		if err != nil || val <= 0 || isSecondary {
 			continue
 		}
 
@@ -167,13 +253,21 @@ func parsePrice(raw string) (float64, error) {
 
 	switch {
 	case hasComma && hasDot:
-		clean = strings.ReplaceAll(clean, ".", "")
-		clean = strings.ReplaceAll(clean, ",", ".")
+		lastComma := strings.LastIndex(clean, ",")
+		lastDot := strings.LastIndex(clean, ".")
+		if lastComma > lastDot {
+			clean = strings.ReplaceAll(clean, ".", "")
+			clean = strings.ReplaceAll(clean, ",", ".")
+		} else {
+			clean = strings.ReplaceAll(clean, ",", "")
+		}
 	case hasComma:
 		clean = strings.ReplaceAll(clean, ",", ".")
 	case hasDot:
 		parts := strings.Split(clean, ".")
-		if len(parts) == 2 && len(parts[1]) == 3 {
+		if len(parts) > 2 {
+			clean = strings.ReplaceAll(clean, ".", "")
+		} else if len(parts) == 2 && len(parts[1]) == 3 && len(parts[0]) >= 1 && len(parts[0]) <= 3 {
 			clean = parts[0] + parts[1]
 		}
 	}

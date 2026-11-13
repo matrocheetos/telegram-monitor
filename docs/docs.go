@@ -897,6 +897,12 @@ const docTemplate = `{
                             "$ref": "#/definitions/internal_adapter_primary_http.OffersResponse"
                         }
                     },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/internal_adapter_primary_http.ErrorEnvelope"
+                        }
+                    },
                     "401": {
                         "description": "Unauthorized",
                         "schema": {
@@ -1193,6 +1199,9 @@ const docTemplate = `{
             "properties": {
                 "authenticated": {
                     "type": "boolean"
+                },
+                "csrfToken": {
+                    "type": "string"
                 },
                 "telegram": {
                     "$ref": "#/definitions/internal_adapter_primary_http.TelegramSessionPayload"

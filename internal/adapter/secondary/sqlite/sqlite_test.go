@@ -1029,3 +1029,205 @@ func TestCouponRepository_ListExtractedCoupons_Dedup4Hours(t *testing.T) {
 	}
 }
 
+func TestUserRepository_CreateInitialAdmin(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db := newTestDB(t)
+	repo := sqlite.NewUserRepository(db)
+
+	admin := &domain.User{
+		Username:     "rootadmin",
+		PasswordHash: "$argon2id$dummyhash", // #nosec G101 -- test dummy hash
+		Role:         domain.RoleAdmin,
+		NtfyTopic:    "promo/user/rootadmin",
+	}
+	if err := repo.CreateInitialAdmin(ctx, admin); err != nil {
+		t.Fatalf("CreateInitialAdmin failed: %v", err)
+	}
+	if admin.ID == 0 {
+		t.Fatalf("expected non-zero admin ID")
+	}
+
+	second := &domain.User{
+		Username:     "secondadmin",
+		PasswordHash: "$argon2id$dummyhash2", // #nosec G101 -- test dummy hash
+		Role:         domain.RoleAdmin,
+		NtfyTopic:    "promo/user/secondadmin",
+	}
+	if err := repo.CreateInitialAdmin(ctx, second); !errors.Is(err, domain.ErrSetupAlreadyCompleted) {
+		t.Fatalf("expected ErrSetupAlreadyCompleted on second CreateInitialAdmin, got %v", err)
+	}
+
+	count, err := repo.CountUsers(ctx)
+	if err != nil {
+		t.Fatalf("CountUsers failed: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected 1 user after rejected second admin, got %d", count)
+	}
+}
+
+func TestSessionRepository_DeleteUserSessions(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db := newTestDB(t)
+	userRepo := sqlite.NewUserRepository(db)
+	sessionRepo := sqlite.NewSessionRepository(db)
+
+	u1 := &domain.User{Username: "u1", PasswordHash: "p1", Role: domain.RoleUser, NtfyTopic: "t1"}
+	u2 := &domain.User{Username: "u2", PasswordHash: "p2", Role: domain.RoleUser, NtfyTopic: "t2"}
+	if err := userRepo.CreateUser(ctx, u1); err != nil {
+		t.Fatalf("CreateUser u1 failed: %v", err)
+	}
+	if err := userRepo.CreateUser(ctx, u2); err != nil {
+		t.Fatalf("CreateUser u2 failed: %v", err)
+	}
+
+	exp := time.Now().UTC().Add(time.Hour)
+	if err := sessionRepo.CreateSession(ctx, "u1_tok1", u1.ID, exp); err != nil {
+		t.Fatalf("CreateSession u1_tok1 failed: %v", err)
+	}
+	if err := sessionRepo.CreateSession(ctx, "u1_tok2", u1.ID, exp); err != nil {
+		t.Fatalf("CreateSession u1_tok2 failed: %v", err)
+	}
+	if err := sessionRepo.CreateSession(ctx, "u2_tok1", u2.ID, exp); err != nil {
+		t.Fatalf("CreateSession u2_tok1 failed: %v", err)
+	}
+
+	if err := sessionRepo.DeleteUserSessions(ctx, u1.ID); err != nil {
+		t.Fatalf("DeleteUserSessions failed: %v", err)
+	}
+
+	if _, err := sessionRepo.GetSessionUser(ctx, "u1_tok1"); !errors.Is(err, domain.ErrUnauthorized) {
+		t.Fatalf("expected u1_tok1 revoked, got %v", err)
+	}
+	if _, err := sessionRepo.GetSessionUser(ctx, "u1_tok2"); !errors.Is(err, domain.ErrUnauthorized) {
+		t.Fatalf("expected u1_tok2 revoked, got %v", err)
+	}
+	if _, err := sessionRepo.GetSessionUser(ctx, "u2_tok1"); err != nil {
+		t.Fatalf("expected u2_tok1 preserved, got %v", err)
+	}
+}
+
+func TestChannelRepository_BatchMethods(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db := newTestDB(t)
+	repo := sqlite.NewChannelRepository(db)
+
+	if err := repo.UpsertChannel(ctx, &domain.TelegramChannel{
+		ChatID:          -1001,
+		AccessHash:      111,
+		Username:        "old_handle",
+		Title:           "Old Title",
+		MonitorProducts: true,
+		MonitorCoupons:  true,
+	}); err != nil {
+		t.Fatalf("UpsertChannel seed failed: %v", err)
+	}
+
+	batch := []*domain.TelegramChannel{
+		{
+			ChatID:          -1001,
+			AccessHash:      222,
+			Username:        "new_handle",
+			Title:           "New Title",
+			MonitorProducts: false,
+			MonitorCoupons:  false,
+		},
+		{
+			ChatID:          -1002,
+			AccessHash:      333,
+			Username:        "second_chan",
+			Title:           "Second Channel",
+			MonitorProducts: false,
+			MonitorCoupons:  false,
+		},
+	}
+
+	if err := repo.UpsertChannelsBatch(ctx, batch); err != nil {
+		t.Fatalf("UpsertChannelsBatch failed: %v", err)
+	}
+
+	ch1, err := repo.GetChannel(ctx, -1001)
+	if err != nil {
+		t.Fatalf("GetChannel -1001 failed: %v", err)
+	}
+	if ch1.Title != "New Title" || ch1.Username != "new_handle" || ch1.AccessHash != 222 {
+		t.Fatalf("expected metadata updated, got %+v", ch1)
+	}
+	if !ch1.MonitorProducts || !ch1.MonitorCoupons {
+		t.Fatalf("expected existing flags preserved on conflict, got %v/%v", ch1.MonitorProducts, ch1.MonitorCoupons)
+	}
+
+	if err := repo.UpdateChannelsFlagsBatch(ctx, []domain.ChannelFlagUpdate{
+		{ChatID: -1001, MonitorProducts: false, MonitorCoupons: true},
+		{ChatID: -1002, MonitorProducts: true, MonitorCoupons: false},
+	}); err != nil {
+		t.Fatalf("UpdateChannelsFlagsBatch failed: %v", err)
+	}
+
+	ch1, _ = repo.GetChannel(ctx, -1001)
+	ch2, _ := repo.GetChannel(ctx, -1002)
+	if ch1.MonitorProducts || !ch1.MonitorCoupons {
+		t.Fatalf("unexpected flags for -1001: %v/%v", ch1.MonitorProducts, ch1.MonitorCoupons)
+	}
+	if !ch2.MonitorProducts || ch2.MonitorCoupons {
+		t.Fatalf("unexpected flags for -1002: %v/%v", ch2.MonitorProducts, ch2.MonitorCoupons)
+	}
+
+	// Missing channel in batch must rollback entire transaction
+	err = repo.UpdateChannelsFlagsBatch(ctx, []domain.ChannelFlagUpdate{
+		{ChatID: -1001, MonitorProducts: true, MonitorCoupons: false},
+		{ChatID: -999999, MonitorProducts: true, MonitorCoupons: true},
+	})
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound on missing channel in batch, got %v", err)
+	}
+
+	ch1AfterRollback, _ := repo.GetChannel(ctx, -1001)
+	if ch1AfterRollback.MonitorProducts || !ch1AfterRollback.MonitorCoupons {
+		t.Fatalf("expected transaction rollback for -1001, got %v/%v", ch1AfterRollback.MonitorProducts, ch1AfterRollback.MonitorCoupons)
+	}
+}
+
+func TestInterestRepository_CountActiveInterestsByUser(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db := newTestDB(t)
+	userRepo := sqlite.NewUserRepository(db)
+	repo := sqlite.NewInterestRepository(db)
+
+	u1 := &domain.User{Username: "cnt_u1", PasswordHash: "p1", Role: domain.RoleUser, NtfyTopic: "t1"}
+	u2 := &domain.User{Username: "cnt_u2", PasswordHash: "p2", Role: domain.RoleUser, NtfyTopic: "t2"}
+	if err := userRepo.CreateUser(ctx, u1); err != nil {
+		t.Fatalf("CreateUser u1 failed: %v", err)
+	}
+	if err := userRepo.CreateUser(ctx, u2); err != nil {
+		t.Fatalf("CreateUser u2 failed: %v", err)
+	}
+
+	items := []*domain.UserInterest{
+		{UserID: u1.ID, RawTerm: "switch", PositiveTokens: []string{"switch"}, NegativeTokens: []string{}, Active: true},
+		{UserID: u1.ID, RawTerm: "ps5", PositiveTokens: []string{"ps5"}, NegativeTokens: []string{}, Active: true},
+		{UserID: u1.ID, RawTerm: "inactive", PositiveTokens: []string{"inactive"}, NegativeTokens: []string{}, Active: false},
+		{UserID: u2.ID, RawTerm: "rtx", PositiveTokens: []string{"rtx"}, NegativeTokens: []string{}, Active: true},
+	}
+	for _, it := range items {
+		if err := repo.CreateInterest(ctx, it); err != nil {
+			t.Fatalf("CreateInterest failed: %v", err)
+		}
+	}
+
+	counts, err := repo.CountActiveInterestsByUser(ctx)
+	if err != nil {
+		t.Fatalf("CountActiveInterestsByUser failed: %v", err)
+	}
+	if counts[u1.ID] != 2 {
+		t.Fatalf("expected 2 active interests for u1, got %d", counts[u1.ID])
+	}
+	if counts[u2.ID] != 1 {
+		t.Fatalf("expected 1 active interest for u2, got %d", counts[u2.ID])
+	}
+}
+

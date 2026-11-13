@@ -81,24 +81,31 @@ type MonitorService struct {
 	snapshot atomic.Pointer[MatcherSnapshot]
 	jobs     chan monitorJob
 
-	mu          sync.Mutex
-	running     atomic.Bool
-	cancelFn    context.CancelFunc
-	wg          sync.WaitGroup
-	dedupMu     sync.Mutex
-	couponDedup map[string]time.Time
+	enqueueMu      sync.RWMutex
+	debugMu        sync.Mutex
+	running        atomic.Bool
+	droppedJobs    atomic.Int64
+	cancelFn       context.CancelFunc
+	wg             sync.WaitGroup
+	dedupMu        sync.Mutex
+	couponDedup    map[string]time.Time
+	couponInFlight map[string]struct{}
 }
 
 func (s *MonitorService) SetDebugRepository(repo port.DebugMessageRepository) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.debugMu.Lock()
+	defer s.debugMu.Unlock()
 	s.debugRepo = repo
 }
 
 func (s *MonitorService) DebugRepository() port.DebugMessageRepository {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.debugMu.Lock()
+	defer s.debugMu.Unlock()
 	return s.debugRepo
+}
+
+func (s *MonitorService) DroppedJobsCount() int64 {
+	return s.droppedJobs.Load()
 }
 
 func NewMonitorService(
@@ -130,6 +137,7 @@ func NewMonitorService(
 		cfg:                 cfg,
 		jobs:                make(chan monitorJob, cfg.QueueSize),
 		couponDedup:         make(map[string]time.Time),
+		couponInFlight:      make(map[string]struct{}),
 	}
 
 	s.snapshot.Store(&MatcherSnapshot{
@@ -141,16 +149,16 @@ func NewMonitorService(
 }
 
 func (s *MonitorService) Start(ctx context.Context) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.enqueueMu.Lock()
+	defer s.enqueueMu.Unlock()
 
-	if s.running.Load() {
+	if !s.running.CompareAndSwap(false, true) {
 		return
 	}
 
+	s.jobs = make(chan monitorJob, s.cfg.QueueSize)
 	workerCtx, cancel := context.WithCancel(ctx)
 	s.cancelFn = cancel
-	s.running.Store(true)
 
 	for i := 0; i < s.cfg.WorkerCount; i++ {
 		s.wg.Add(1)
@@ -159,34 +167,45 @@ func (s *MonitorService) Start(ctx context.Context) {
 }
 
 func (s *MonitorService) Stop() {
-	s.mu.Lock()
-	if !s.running.Load() {
-		s.mu.Unlock()
+	s.enqueueMu.Lock()
+	if !s.running.CompareAndSwap(true, false) {
+		s.enqueueMu.Unlock()
 		return
 	}
-	s.running.Store(false)
+	close(s.jobs)
 	cancel := s.cancelFn
-	s.mu.Unlock()
+	s.enqueueMu.Unlock()
 
-	if cancel != nil {
-		cancel()
+	done := make(chan struct{})
+	go func() {
+		s.wg.Wait()
+		close(done)
+	}()
+
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+
+	select {
+	case <-done:
+		if cancel != nil {
+			cancel()
+		}
+	case <-timer.C:
+		if cancel != nil {
+			cancel()
+		}
+		<-done
 	}
-	s.wg.Wait()
 }
 
 func (s *MonitorService) worker(ctx context.Context) {
 	defer s.wg.Done()
 
-	for {
-		select {
-		case <-ctx.Done():
+	for job := range s.jobs {
+		if ctx.Err() != nil {
 			return
-		case job, ok := <-s.jobs:
-			if !ok {
-				return
-			}
-			s.processJob(ctx, job)
 		}
+		s.processJob(ctx, job)
 	}
 }
 
@@ -212,33 +231,11 @@ func (s *MonitorService) processJob(ctx context.Context, job monitorJob) {
 			}
 		}
 	case jobKindCoupon:
-		if s.isDuplicateCoupon(ctx, job.coupon) {
-			return
-		}
-
-		if s.couponRepo != nil {
-			if err := s.couponRepo.RecordCoupon(ctx, job.coupon.Code, job.coupon.StoreName, job.coupon.StoreURL, job.channelID, job.text); err != nil {
-				slog.Error("failed to record coupon",
-					"code", job.coupon.Code,
-					"store", job.coupon.StoreName,
-					"channel_id", job.channelID,
-					"error", err,
-				)
-			}
-		}
-		if s.notificationGateway != nil {
-			if err := s.notificationGateway.SendCouponNotification(ctx, job.coupon); err != nil {
-				slog.Error("failed to send coupon notification",
-					"code", job.coupon.Code,
-					"store", job.coupon.StoreName,
-					"error", err,
-				)
-			}
-		}
+		s.handleCouponJob(ctx, job)
 	case jobKindDebugRecord:
-		s.mu.Lock()
+		s.debugMu.Lock()
 		debugRepo := s.debugRepo
-		s.mu.Unlock()
+		s.debugMu.Unlock()
 		if debugRepo != nil && job.debugRecord != nil {
 			if err := debugRepo.RecordAnalyzedMessage(ctx, job.debugRecord); err != nil {
 				slog.Error("failed to record debug analyzed message",
@@ -251,13 +248,95 @@ func (s *MonitorService) processJob(ctx context.Context, job monitorJob) {
 	}
 }
 
-func (s *MonitorService) isDuplicateCoupon(ctx context.Context, coupon domain.Coupon) bool {
-	key := strings.ToUpper(strings.TrimSpace(coupon.Code)) + "|" + strings.ToLower(strings.TrimSpace(coupon.StoreName))
+func couponDedupKey(coupon domain.Coupon) string {
+	return strings.ToUpper(strings.TrimSpace(coupon.Code)) + "|" + strings.ToLower(strings.TrimSpace(coupon.StoreName))
+}
+
+func (s *MonitorService) handleCouponJob(ctx context.Context, job monitorJob) {
+	key := couponDedupKey(job.coupon)
+	now := time.Now().UTC()
+	cutoff := now.Add(-s.cfg.CouponDedupWindow)
+
+	s.dedupMu.Lock()
+	if len(s.couponDedup) > 2000 {
+		for k, t := range s.couponDedup {
+			if t.Before(cutoff) {
+				delete(s.couponDedup, k)
+			}
+		}
+	}
+	if lastSeen, found := s.couponDedup[key]; found && lastSeen.After(cutoff) {
+		s.dedupMu.Unlock()
+		return
+	}
+	if _, inFlight := s.couponInFlight[key]; inFlight {
+		s.dedupMu.Unlock()
+		return
+	}
+	s.couponInFlight[key] = struct{}{}
+	s.dedupMu.Unlock()
+
+	committed := false
+	defer func() {
+		s.dedupMu.Lock()
+		delete(s.couponInFlight, key)
+		if committed {
+			s.couponDedup[key] = time.Now().UTC()
+		}
+		s.dedupMu.Unlock()
+	}()
+
+	persisted := false
+	if s.couponRepo != nil {
+		hasRecent, err := s.couponRepo.HasRecentCoupon(ctx, job.coupon.Code, job.coupon.StoreName, cutoff)
+		if err != nil {
+			slog.Error("failed to check recent coupon in repository", "error", err)
+		} else if hasRecent {
+			committed = true
+			return
+		}
+
+		if err := s.couponRepo.RecordCoupon(ctx, job.coupon.Code, job.coupon.StoreName, job.coupon.StoreURL, job.channelID, job.text); err != nil {
+			slog.Error("failed to record coupon",
+				"code", job.coupon.Code,
+				"store", job.coupon.StoreName,
+				"channel_id", job.channelID,
+				"error", err,
+			)
+			return
+		}
+		persisted = true
+	}
+
+	notified := false
+	if s.notificationGateway != nil {
+		if err := s.notificationGateway.SendCouponNotification(ctx, job.coupon); err != nil {
+			slog.Error("failed to send coupon notification",
+				"code", job.coupon.Code,
+				"store", job.coupon.StoreName,
+				"error", err,
+			)
+		} else {
+			notified = true
+		}
+	}
+
+	if persisted || (s.couponRepo == nil && notified) {
+		committed = true
+	}
+}
+
+func (s *MonitorService) checkCouponDuplicateReadOnly(ctx context.Context, coupon domain.Coupon) bool {
+	key := couponDedupKey(coupon)
 	now := time.Now().UTC()
 	cutoff := now.Add(-s.cfg.CouponDedupWindow)
 
 	s.dedupMu.Lock()
 	if lastSeen, found := s.couponDedup[key]; found && lastSeen.After(cutoff) {
+		s.dedupMu.Unlock()
+		return true
+	}
+	if _, inFlight := s.couponInFlight[key]; inFlight {
 		s.dedupMu.Unlock()
 		return true
 	}
@@ -267,28 +346,10 @@ func (s *MonitorService) isDuplicateCoupon(ctx context.Context, coupon domain.Co
 		hasRecent, err := s.couponRepo.HasRecentCoupon(ctx, coupon.Code, coupon.StoreName, cutoff)
 		if err != nil {
 			slog.Error("failed to check recent coupon in repository", "error", err)
-		} else if hasRecent {
-			s.dedupMu.Lock()
-			s.couponDedup[key] = now
-			s.dedupMu.Unlock()
-			return true
+			return false
 		}
+		return hasRecent
 	}
-
-	s.dedupMu.Lock()
-	if lastSeen, found := s.couponDedup[key]; found && lastSeen.After(cutoff) {
-		s.dedupMu.Unlock()
-		return true
-	}
-	s.couponDedup[key] = now
-	if len(s.couponDedup) > 2000 {
-		for k, t := range s.couponDedup {
-			if t.Before(cutoff) {
-				delete(s.couponDedup, k)
-			}
-		}
-	}
-	s.dedupMu.Unlock()
 
 	return false
 }
@@ -373,9 +434,9 @@ func (s *MonitorService) ProcessIncomingTelegramMessage(ctx context.Context, msg
 	flags, channelKnown := snap.Channels[msg.ChannelID]
 	isMonitored := channelKnown && (flags.MonitorProducts || flags.MonitorCoupons)
 
-	s.mu.Lock()
+	s.debugMu.Lock()
 	debugRepo := s.debugRepo
-	s.mu.Unlock()
+	s.debugMu.Unlock()
 
 	if debugRepo == nil {
 		if !isMonitored {
@@ -512,7 +573,7 @@ func (s *MonitorService) processAndDebugTelegramMessage(
 			}
 			seenInMsg[key] = struct{}{}
 
-			isDedup := s.isDuplicateCoupon(ctx, coupon)
+			isDedup := s.checkCouponDuplicateReadOnly(ctx, coupon)
 			if isDedup {
 				dedupCount++
 			}
@@ -708,14 +769,21 @@ func (s *MonitorService) matchCoupons(ctx context.Context, channelID int64, mess
 }
 
 func (s *MonitorService) enqueue(ctx context.Context, job monitorJob) {
-	select {
-	case <-ctx.Done():
+	s.enqueueMu.RLock()
+	defer s.enqueueMu.RUnlock()
+
+	if !s.running.Load() || ctx.Err() != nil {
 		return
+	}
+
+	select {
 	case s.jobs <- job:
 	default:
-		slog.Warn("monitor worker queue is full, dropping job",
+		dropped := s.droppedJobs.Add(1)
+		slog.WarnContext(ctx, "monitor worker queue is full, dropping job",
 			"kind", job.kind,
 			"channel_id", job.channelID,
+			"droppedTotal", dropped,
 		)
 	}
 }

@@ -1,6 +1,7 @@
 package http
 
 import (
+	"log/slog"
 	"net/http"
 
 	"github.com/matrocheetos/telegram-monitor/internal/domain"
@@ -109,20 +110,21 @@ func (s *Server) handleSetupPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	//nolint:gosec // session cookie for api
-	http.SetCookie(w, &http.Cookie{
-		Name:     "session_id",
-		Value:    token,
-		Path:     "/",
-		MaxAge:   30 * 24 * 3600,
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-	})
+	sessionMaxAge := int(domain.SessionDuration.Seconds())
+	s.setSessionCookie(w, r, token, sessionMaxAge)
+
+	newCSRF, err := generateCSRFToken()
+	if err != nil {
+		slog.ErrorContext(r.Context(), "failed to rotate csrf token", "error", err)
+		writeErrorJSON(w, http.StatusInternalServerError, "internal_error", "failed to rotate csrf token")
+		return
+	}
+	setCSRFCookie(w, newCSRF, sessionMaxAge, s.isSecureRequest(r))
 
 	writeJSON(w, http.StatusCreated, SessionResponse{
 		NeedsInitialSetup: false,
 		Authenticated:     true,
-		CSRFToken:         GetCSRFToken(r.Context()),
+		CSRFToken:         newCSRF,
 		User: &UserPayload{
 			ID:        user.ID,
 			Username:  user.Username,
@@ -160,15 +162,16 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	//nolint:gosec // session cookie for api
-	http.SetCookie(w, &http.Cookie{
-		Name:     "session_id",
-		Value:    token,
-		Path:     "/",
-		MaxAge:   30 * 24 * 3600,
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-	})
+	sessionMaxAge := int(domain.SessionDuration.Seconds())
+	s.setSessionCookie(w, r, token, sessionMaxAge)
+
+	newCSRF, err := generateCSRFToken()
+	if err != nil {
+		slog.ErrorContext(r.Context(), "failed to rotate csrf token", "error", err)
+		writeErrorJSON(w, http.StatusInternalServerError, "internal_error", "failed to rotate csrf token")
+		return
+	}
+	setCSRFCookie(w, newCSRF, sessionMaxAge, s.isSecureRequest(r))
 
 	var tgPayload *TelegramSessionPayload
 	if user.Role == domain.RoleAdmin {
@@ -188,6 +191,7 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, LoginResponse{
 		Authenticated: true,
+		CSRFToken:     newCSRF,
 		User: UserPayload{
 			ID:        user.ID,
 			Username:  user.Username,
@@ -213,15 +217,21 @@ func (s *Server) handleLogoutPost(w http.ResponseWriter, r *http.Request) {
 		_ = s.authUseCase.Logout(r.Context(), cookie.Value)
 	}
 
-	//nolint:gosec // clearing session cookie
-	http.SetCookie(w, &http.Cookie{
-		Name:     "session_id",
-		Value:    "",
-		Path:     "/",
-		MaxAge:   -1,
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-	})
+	s.setSessionCookie(w, r, "", -1)
+	setCSRFCookie(w, "", -1, s.isSecureRequest(r))
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) setSessionCookie(w http.ResponseWriter, r *http.Request, token string, maxAge int) {
+	// #nosec G124 -- Secure flag is dynamically set via isSecureRequest for HTTPS and production environments
+	http.SetCookie(w, &http.Cookie{
+		Name:     "session_id",
+		Value:    token,
+		Path:     "/",
+		MaxAge:   maxAge,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   s.isSecureRequest(r),
+	})
 }

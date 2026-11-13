@@ -131,4 +131,105 @@ Use o cupom MAGALU20 no carrinho.`
 			t.Fatalf("expected 0 coupons, got %d", len(coupons))
 		}
 	})
+
+	t.Run("rejects promo metadata labels, stop words, installments, voltages, and url ports", func(t *testing.T) {
+		t.Parallel()
+		msg := `🎟️ SUPER OFERTA AMAZON!
+Validade: HOJE
+Parcelas: 10X
+Parcelamento: 12X
+Desconto: PRIME
+Cor: PRETO
+Condição: NOVO
+Voltagem: 110V
+Voltagem: 220V
+Vendido por: AMAZON
+Frete: GRATIS
+Link: https://amzn.to:8080/deal
+🎟️ 10% OFF: SALVAESSA
+🎟️ 12% OFF: CARRINHOCHEIOML
+Cupom: ABC10 (Validade: AMANHA)
+Código: XYZ20
+Desconto: SAVE20`
+
+		coupons := domain.ExtractCoupons(msg)
+		expected := []string{"SALVAESSA", "CARRINHOCHEIOML", "ABC10", "XYZ20", "SAVE20"}
+		if len(coupons) != len(expected) {
+			t.Fatalf("expected %d coupons (%v), got %d (%v)", len(expected), expected, len(coupons), coupons)
+		}
+		for i, want := range expected {
+			if coupons[i].Code != want {
+				t.Errorf("coupon[%d] = %s, want %s", i, coupons[i].Code, want)
+			}
+		}
+	})
+
+	t.Run("rejects installment and voltage candidates in keyword pattern", func(t *testing.T) {
+		t.Parallel()
+		msg := `Use o cupom 10X ou código 220V ou cupom HOJE ou cupom PRIME`
+
+		coupons := domain.ExtractCoupons(msg)
+		if len(coupons) != 0 {
+			t.Fatalf("expected 0 coupons, got %d (%v)", len(coupons), coupons)
+		}
+	})
+}
+
+func TestIdentifyStoreFromText(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		text      string
+		wantStore string
+		wantURL   string
+	}{
+		{
+			name:      "specific store keyword with aggregator shortener URL preserves shortener link",
+			text:      "🔥 Cupom Amazon! Use ALEXA10 em https://aoferta.net/xyz",
+			wantStore: "Amazon",
+			wantURL:   "https://aoferta.net/xyz",
+		},
+		{
+			name:      "specific store URL takes precedence over aggregator URL",
+			text:      "Oferta em https://aoferta.net/abc e https://amzn.to/def",
+			wantStore: "Amazon",
+			wantURL:   "https://amzn.to/def",
+		},
+		{
+			name:      "aggregator URL used when no specific store matches",
+			text:      "Super cupom imperdível em https://aoferta.net/xyz",
+			wantStore: "A Oferta",
+			wantURL:   "https://aoferta.net/xyz",
+		},
+		{
+			name:      "aggregator keyword without URL uses aggregator fallback",
+			text:      "Confira os cupons da A Oferta hoje",
+			wantStore: "A Oferta",
+			wantURL:   "https://aoferta.net",
+		},
+		{
+			name:      "unknown store with URL keeps Oferta and URL",
+			text:      "Promoção em https://unknown-shop.example/item",
+			wantStore: "Oferta",
+			wantURL:   "https://unknown-shop.example/item",
+		},
+		{
+			name:      "unknown store without URL returns empty URL",
+			text:      "Cupom exclusivo sem link definido",
+			wantStore: "Oferta",
+			wantURL:   "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			gotStore, gotURL := domain.IdentifyStoreFromText(tt.text)
+			if gotStore != tt.wantStore || gotURL != tt.wantURL {
+				t.Errorf("IdentifyStoreFromText(%q) = (%q, %q), want (%q, %q)",
+					tt.text, gotStore, gotURL, tt.wantStore, tt.wantURL)
+			}
+		})
+	}
 }

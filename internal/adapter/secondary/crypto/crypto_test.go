@@ -155,6 +155,14 @@ func TestArgon2idHasher(t *testing.T) {
 		}
 	})
 
+	t.Run("zero argon2 parameters rejected safely", func(t *testing.T) {
+		t.Parallel()
+		_, err := hasher.VerifyPassword(password, "$argon2id$v=19$m=65536,t=0,p=0$c2FsdA$aGFzaA")
+		if !errors.Is(err, crypto.ErrInvalidHashFormat) {
+			t.Fatalf("expected ErrInvalidHashFormat, got %v", err)
+		}
+	})
+
 	t.Run("incompatible algorithm", func(t *testing.T) {
 		t.Parallel()
 		_, err := hasher.VerifyPassword(password, "$bcrypt$v=19$m=65536,t=3,p=4$salt$hash")

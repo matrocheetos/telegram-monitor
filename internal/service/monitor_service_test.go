@@ -2,6 +2,7 @@ package service_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -28,6 +29,17 @@ func (m *mockUserRepo) CreateUser(ctx context.Context, u *domain.User) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	u.ID = int64(len(m.users) + 1)
+	m.users = append(m.users, u)
+	return nil
+}
+
+func (m *mockUserRepo) CreateInitialAdmin(ctx context.Context, u *domain.User) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.users) > 0 {
+		return domain.ErrSetupAlreadyCompleted
+	}
+	u.ID = 1
 	m.users = append(m.users, u)
 	return nil
 }
@@ -135,6 +147,18 @@ func (m *mockInterestRepo) DeleteInterest(ctx context.Context, userID, id int64)
 	return domain.ErrNotFound
 }
 
+func (m *mockInterestRepo) CountActiveInterestsByUser(ctx context.Context) (map[int64]int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	counts := make(map[int64]int)
+	for _, it := range m.interests {
+		if it.Active {
+			counts[it.UserID]++
+		}
+	}
+	return counts, nil
+}
+
 type mockChannelRepo struct {
 	mu       sync.Mutex
 	channels map[int64]*domain.TelegramChannel
@@ -148,6 +172,22 @@ func (m *mockChannelRepo) UpsertChannel(ctx context.Context, ch *domain.Telegram
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.channels[ch.ChatID] = ch
+	return nil
+}
+
+func (m *mockChannelRepo) UpsertChannelsBatch(ctx context.Context, channels []*domain.TelegramChannel) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, ch := range channels {
+		if ch == nil {
+			continue
+		}
+		if existing, ok := m.channels[ch.ChatID]; ok {
+			ch.MonitorProducts = existing.MonitorProducts
+			ch.MonitorCoupons = existing.MonitorCoupons
+		}
+		m.channels[ch.ChatID] = ch
+	}
 	return nil
 }
 
@@ -180,6 +220,22 @@ func (m *mockChannelRepo) UpdateChannelFlags(ctx context.Context, chatID int64, 
 	}
 	ch.MonitorProducts = monitorProducts
 	ch.MonitorCoupons = monitorCoupons
+	return nil
+}
+
+func (m *mockChannelRepo) UpdateChannelsFlagsBatch(ctx context.Context, updates []domain.ChannelFlagUpdate) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, u := range updates {
+		if _, ok := m.channels[u.ChatID]; !ok {
+			return domain.ErrNotFound
+		}
+	}
+	for _, u := range updates {
+		ch := m.channels[u.ChatID]
+		ch.MonitorProducts = u.MonitorProducts
+		ch.MonitorCoupons = u.MonitorCoupons
+	}
 	return nil
 }
 
@@ -1032,6 +1088,278 @@ func TestMonitorService_DebugCollectionConcurrentBurst(t *testing.T) {
 	defer debugRepo.mu.Unlock()
 	if len(debugRepo.records) != burstSize {
 		t.Fatalf("expected %d debug records recorded in burst, got %d", burstSize, len(debugRepo.records))
+	}
+}
+
+type slowMatchRepo struct {
+	mu      sync.Mutex
+	delay   time.Duration
+	matches []string
+}
+
+func (m *slowMatchRepo) RecordProductMatch(ctx context.Context, userID int64, interestID *int64, channelID int64, price *float64, text string) error {
+	select {
+	case <-time.After(m.delay):
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.matches = append(m.matches, text)
+	return nil
+}
+
+func (m *slowMatchRepo) ListUserMatchedProducts(ctx context.Context, userID int64, searchQuery string, limit, offset int) ([]domain.UserMatchedProduct, int, error) {
+	return nil, 0, nil
+}
+
+func (m *slowMatchRepo) PruneOlderThan(ctx context.Context, cutoff time.Time, batchSize int) (int64, error) {
+	return 0, nil
+}
+
+func (m *slowMatchRepo) PruneExcessAbove(ctx context.Context, maxKeep int64, batchSize int) (int64, error) {
+	return 0, nil
+}
+
+func (m *slowMatchRepo) CountTotal(ctx context.Context) (int64, error) {
+	return 0, nil
+}
+
+func TestMonitorService_GracefulDrainOnStop(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	userRepo := &mockUserRepo{
+		users: []*domain.User{{ID: 1, Username: "alice", NtfyTopic: "promo/user/alice"}},
+	}
+	interestRepo := &mockInterestRepo{
+		interests: []*domain.UserInterest{
+			{ID: 1, UserID: 1, RawTerm: "switch", PositiveTokens: []string{"switch"}, Active: true},
+		},
+	}
+	channelRepo := newMockChannelRepo()
+	_ = channelRepo.UpsertChannel(ctx, &domain.TelegramChannel{
+		ChatID:          -100,
+		Title:           "Deals",
+		MonitorProducts: true,
+	})
+
+	matchRepo := &slowMatchRepo{delay: 15 * time.Millisecond}
+	gateway := &mockNotificationGateway{}
+
+	svc := service.NewMonitorService(
+		userRepo,
+		interestRepo,
+		channelRepo,
+		matchRepo,
+		&mockCouponRepo{},
+		gateway,
+		service.MonitorConfig{WorkerCount: 2, QueueSize: 32},
+	)
+	if err := svc.RebuildSnapshot(ctx); err != nil {
+		t.Fatalf("RebuildSnapshot failed: %v", err)
+	}
+
+	svc.Start(ctx)
+	const totalJobs = 10
+	for i := 0; i < totalJobs; i++ {
+		_ = svc.ProcessIncomingMessage(ctx, -100, fmt.Sprintf("Switch OLED deal %d", i))
+	}
+
+	// Stop immediately without sleeping; all 10 queued jobs must drain cleanly.
+	svc.Stop()
+
+	matchRepo.mu.Lock()
+	recorded := len(matchRepo.matches)
+	matchRepo.mu.Unlock()
+	if recorded != totalJobs {
+		t.Fatalf("expected all %d queued jobs to drain on Stop, got %d", totalJobs, recorded)
+	}
+
+	// Restart cycle works cleanly and dropped counter stays accessible.
+	svc.Start(ctx)
+	_ = svc.ProcessIncomingMessage(ctx, -100, "Switch OLED restart cycle")
+	svc.Stop()
+
+	matchRepo.mu.Lock()
+	recordedAfterRestart := len(matchRepo.matches)
+	matchRepo.mu.Unlock()
+	if recordedAfterRestart != totalJobs+1 {
+		t.Fatalf("expected %d total jobs after restart cycle, got %d", totalJobs+1, recordedAfterRestart)
+	}
+	if svc.DroppedJobsCount() != 0 {
+		t.Fatalf("expected 0 dropped jobs, got %d", svc.DroppedJobsCount())
+	}
+}
+
+type failingCouponRepo struct {
+	mu      sync.Mutex
+	failErr error
+	coupons []domain.Coupon
+}
+
+func (m *failingCouponRepo) RecordCoupon(ctx context.Context, code, storeName, storeURL string, channelID int64, text string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.failErr != nil {
+		return m.failErr
+	}
+	m.coupons = append(m.coupons, domain.Coupon{
+		Code:      code,
+		StoreName: storeName,
+		StoreURL:  storeURL,
+		CreatedAt: time.Now().UTC(),
+	})
+	return nil
+}
+
+func (m *failingCouponRepo) HasRecentCoupon(ctx context.Context, code, storeName string, since time.Time) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, c := range m.coupons {
+		if strings.EqualFold(c.Code, code) && strings.EqualFold(c.StoreName, storeName) && !c.CreatedAt.Before(since) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (m *failingCouponRepo) ListExtractedCoupons(ctx context.Context, searchQuery string, limit, offset int) ([]domain.ExtractedCoupon, int, error) {
+	return nil, 0, nil
+}
+
+func (m *failingCouponRepo) PruneOlderThan(ctx context.Context, cutoff time.Time, batchSize int) (int64, error) {
+	return 0, nil
+}
+
+func (m *failingCouponRepo) PruneExcessAbove(ctx context.Context, maxKeep int64, batchSize int) (int64, error) {
+	return 0, nil
+}
+
+func (m *failingCouponRepo) CountTotal(ctx context.Context) (int64, error) {
+	return 0, nil
+}
+
+func TestMonitorService_CouponDedup_NonPoisoningOnRepoFailure(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	channelRepo := newMockChannelRepo()
+	_ = channelRepo.UpsertChannel(ctx, &domain.TelegramChannel{
+		ChatID:         600,
+		Title:          "Coupons",
+		MonitorCoupons: true,
+	})
+
+	couponRepo := &failingCouponRepo{failErr: errors.New("sqlite busy")}
+	gateway := &mockNotificationGateway{}
+
+	svc := service.NewMonitorService(
+		&mockUserRepo{},
+		&mockInterestRepo{},
+		channelRepo,
+		&mockMatchRepo{},
+		couponRepo,
+		gateway,
+		service.MonitorConfig{WorkerCount: 1, QueueSize: 32, CouponDedupWindow: 4 * time.Hour},
+	)
+	if err := svc.RebuildSnapshot(ctx); err != nil {
+		t.Fatalf("RebuildSnapshot failed: %v", err)
+	}
+
+	svc.Start(ctx)
+
+	msg := "🎟️ Cupom Amazon: RETRY10 https://www.amazon.com.br/deal"
+	_ = svc.ProcessIncomingMessage(ctx, 600, msg)
+
+	// Drain worker so first failed attempt finishes before clearing failErr.
+	svc.Stop()
+
+	gateway.mu.Lock()
+	notifsAfterFailure := len(gateway.couponNotifs)
+	gateway.mu.Unlock()
+	if notifsAfterFailure != 0 {
+		t.Fatalf("expected 0 notifications when RecordCoupon fails, got %d", notifsAfterFailure)
+	}
+
+	// Recover repository and send the same coupon again; dedup cache must NOT be poisoned.
+	couponRepo.mu.Lock()
+	couponRepo.failErr = nil
+	couponRepo.mu.Unlock()
+
+	svc.Start(ctx)
+	_ = svc.ProcessIncomingMessage(ctx, 600, msg)
+	svc.Stop()
+
+	couponRepo.mu.Lock()
+	recorded := len(couponRepo.coupons)
+	couponRepo.mu.Unlock()
+	if recorded != 1 {
+		t.Fatalf("expected 1 recorded coupon after recovery, got %d", recorded)
+	}
+
+	gateway.mu.Lock()
+	notifsAfterRecovery := len(gateway.couponNotifs)
+	gateway.mu.Unlock()
+	if notifsAfterRecovery != 1 {
+		t.Fatalf("expected 1 coupon notification after recovery, got %d", notifsAfterRecovery)
+	}
+}
+
+func TestMonitorService_DebugMode_DeliversCouponNotification(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	channelRepo := newMockChannelRepo()
+	_ = channelRepo.UpsertChannel(ctx, &domain.TelegramChannel{
+		ChatID:         -1001,
+		Title:          "Coupons Debug",
+		MonitorCoupons: true,
+	})
+
+	couponRepo := &mockCouponRepo{}
+	gateway := &mockNotificationGateway{}
+	debugRepo := &mockDebugMessageRepo{}
+
+	svc := service.NewMonitorService(
+		&mockUserRepo{},
+		&mockInterestRepo{},
+		channelRepo,
+		&mockMatchRepo{},
+		couponRepo,
+		gateway,
+		service.MonitorConfig{WorkerCount: 2, QueueSize: 32, CouponDedupWindow: 4 * time.Hour},
+	)
+	svc.SetDebugRepository(debugRepo)
+	_ = svc.RebuildSnapshot(ctx)
+
+	svc.Start(ctx)
+	_ = svc.ProcessIncomingTelegramMessage(ctx, domain.IncomingTelegramMessage{
+		ChannelID:         -1001,
+		TelegramMessageID: 42,
+		Text:              "Cupom Kabum: DEBUG10 no site https://www.kabum.com.br",
+	})
+	svc.Stop()
+
+	couponRepo.mu.Lock()
+	couponsCount := len(couponRepo.coupons)
+	couponRepo.mu.Unlock()
+	if couponsCount != 1 {
+		t.Fatalf("expected 1 coupon recorded in debug mode, got %d", couponsCount)
+	}
+
+	gateway.mu.Lock()
+	notifsCount := len(gateway.couponNotifs)
+	gateway.mu.Unlock()
+	if notifsCount != 1 {
+		t.Fatalf("expected 1 coupon notification delivered in debug mode, got %d", notifsCount)
+	}
+
+	debugRepo.mu.Lock()
+	debugCount := len(debugRepo.records)
+	debugRepo.mu.Unlock()
+	if debugCount != 1 {
+		t.Fatalf("expected 1 debug record, got %d", debugCount)
 	}
 }
 
