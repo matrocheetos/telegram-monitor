@@ -56,16 +56,19 @@ const (
 )
 
 type monitorJob struct {
-	kind        jobKind
-	userID      int64
-	interestID  int64
-	channelID   int64
-	username    string
-	price       *float64
-	text        string
-	offerURL    string
-	coupon      domain.Coupon
-	debugRecord *domain.AnalyzedMessageDebugRecord
+	kind               jobKind
+	userID             int64
+	interestID         int64
+	channelID          int64
+	username           string
+	matchedTerm        string
+	price              *float64
+	text               string
+	offerURL           string
+	couponCode         string
+	telegramMessageURL string
+	coupon             domain.Coupon
+	debugRecord        *domain.AnalyzedMessageDebugRecord
 }
 
 type MonitorService struct {
@@ -213,7 +216,16 @@ func (s *MonitorService) processJob(ctx context.Context, job monitorJob) {
 	switch job.kind {
 	case jobKindProduct:
 		if s.notificationGateway != nil {
-			if err := s.notificationGateway.SendProductNotification(ctx, job.username, job.offerURL, job.price, job.text); err != nil {
+			notif := port.ProductNotification{
+				Username:           job.username,
+				MatchedTerm:        job.matchedTerm,
+				Price:              job.price,
+				Text:               job.text,
+				OfferURL:           job.offerURL,
+				CouponCode:         job.couponCode,
+				TelegramMessageURL: job.telegramMessageURL,
+			}
+			if err := s.notificationGateway.SendProductNotification(ctx, notif); err != nil {
 				slog.Error("failed to send product notification",
 					"username", job.username,
 					"error", err,
@@ -310,7 +322,14 @@ func (s *MonitorService) handleCouponJob(ctx context.Context, job monitorJob) {
 
 	notified := false
 	if s.notificationGateway != nil {
-		if err := s.notificationGateway.SendCouponNotification(ctx, job.coupon); err != nil {
+		notif := port.CouponNotification{
+			Code:               job.coupon.Code,
+			StoreName:          job.coupon.StoreName,
+			StoreURL:           job.coupon.StoreURL,
+			Text:               job.text,
+			TelegramMessageURL: job.telegramMessageURL,
+		}
+		if err := s.notificationGateway.SendCouponNotification(ctx, notif); err != nil {
 			slog.Error("failed to send coupon notification",
 				"code", job.coupon.Code,
 				"store", job.coupon.StoreName,
@@ -442,11 +461,18 @@ func (s *MonitorService) ProcessIncomingTelegramMessage(ctx context.Context, msg
 		if !isMonitored {
 			return nil
 		}
+		telegramMsgURL := domain.BuildTelegramMessageLink(msg.ChannelID, flags.Username, msg.TelegramMessageID)
+		var extractedCoupons []domain.Coupon
+		couponsExtracted := false
+
 		if flags.MonitorProducts && len(snap.Interests) > 0 {
-			s.matchProducts(ctx, snap.Interests, msg)
+			extractedCoupons, couponsExtracted = s.matchProducts(ctx, snap.Interests, msg, telegramMsgURL)
 		}
 		if flags.MonitorCoupons {
-			s.matchCoupons(ctx, msg)
+			if !couponsExtracted {
+				extractedCoupons = domain.ExtractCouponsWithEntities(msg.Text, msg.Entities)
+			}
+			s.matchCoupons(ctx, msg, extractedCoupons, telegramMsgURL)
 		}
 		return nil
 	}
@@ -479,8 +505,16 @@ func (s *MonitorService) processAndDebugTelegramMessage(
 
 	plainURLs := domain.ExtractAllURLs(rawText)
 	firstURL := domain.ExtractFirstURL(rawText)
+	bestOfferURL := domain.ExtractBestOfferURL(msg)
+	telegramMsgURL := domain.BuildTelegramMessageLink(msg.ChannelID, flags.Username, msg.TelegramMessageID)
 	hasCouponIndicator := domain.HasCouponIndicator(rawText)
 	identifiedStore, identifiedStoreURL := domain.IdentifyStoreFromText(rawText)
+
+	allCoupons := domain.ExtractCouponsWithEntities(rawText, msg.Entities)
+	relatedCouponCode := ""
+	if len(allCoupons) > 0 {
+		relatedCouponCode = allCoupons[0].Code
+	}
 
 	hasCodeEntity := false
 	for _, ent := range msg.Entities {
@@ -492,9 +526,6 @@ func (s *MonitorService) processAndDebugTelegramMessage(
 
 	var matchedInterests []domain.DebugMatchedInterestSummary
 	if channelKnown && flags.MonitorProducts && len(snap.Interests) > 0 && len(tokens) > 0 {
-		var offerURL string
-		var offerURLExtracted bool
-
 		for i := range snap.Interests {
 			interest := &snap.Interests[i]
 			candidate := domain.UserInterest{
@@ -515,11 +546,6 @@ func (s *MonitorService) processAndDebugTelegramMessage(
 				}
 			}
 
-			if !offerURLExtracted {
-				offerURL = firstURL
-				offerURLExtracted = true
-			}
-
 			matchedInterests = append(matchedInterests, domain.DebugMatchedInterestSummary{
 				InterestID: interest.ID,
 				UserID:     interest.UserID,
@@ -528,14 +554,17 @@ func (s *MonitorService) processAndDebugTelegramMessage(
 			})
 
 			job := monitorJob{
-				kind:       jobKindProduct,
-				userID:     interest.UserID,
-				interestID: interest.ID,
-				channelID:  msg.ChannelID,
-				username:   interest.Username,
-				price:      extractedLowestPrice,
-				text:       rawText,
-				offerURL:   offerURL,
+				kind:               jobKindProduct,
+				userID:             interest.UserID,
+				interestID:         interest.ID,
+				channelID:          msg.ChannelID,
+				username:           interest.Username,
+				matchedTerm:        interest.RawTerm,
+				price:              extractedLowestPrice,
+				text:               rawText,
+				offerURL:           bestOfferURL,
+				couponCode:         relatedCouponCode,
+				telegramMessageURL: telegramMsgURL,
 			}
 			s.enqueue(ctx, job)
 		}
@@ -543,7 +572,6 @@ func (s *MonitorService) processAndDebugTelegramMessage(
 
 	var extractedCoupons []domain.DebugExtractedCouponSummary
 	var dedupCount int
-	allCoupons := domain.ExtractCouponsWithEntities(rawText, msg.Entities)
 
 	if len(allCoupons) > 0 {
 		seenInMsg := make(map[string]struct{}, len(allCoupons))
@@ -553,6 +581,10 @@ func (s *MonitorService) processAndDebugTelegramMessage(
 				continue
 			}
 			seenInMsg[key] = struct{}{}
+
+			if firstURL == "" && bestOfferURL != "" {
+				coupon.StoreURL = bestOfferURL
+			}
 
 			isDedup := s.checkCouponDuplicateReadOnly(ctx, coupon)
 			if isDedup {
@@ -568,10 +600,11 @@ func (s *MonitorService) processAndDebugTelegramMessage(
 
 			if channelKnown && flags.MonitorCoupons && !isDedup {
 				job := monitorJob{
-					kind:      jobKindCoupon,
-					channelID: msg.ChannelID,
-					text:      rawText,
-					coupon:    coupon,
+					kind:               jobKindCoupon,
+					channelID:          msg.ChannelID,
+					text:               rawText,
+					telegramMessageURL: telegramMsgURL,
+					coupon:             coupon,
 				}
 				s.enqueue(ctx, job)
 			}
@@ -644,10 +677,15 @@ func (s *MonitorService) processAndDebugTelegramMessage(
 	})
 }
 
-func (s *MonitorService) matchProducts(ctx context.Context, interests []CompiledInterest, msg domain.IncomingTelegramMessage) {
+func (s *MonitorService) matchProducts(
+	ctx context.Context,
+	interests []CompiledInterest,
+	msg domain.IncomingTelegramMessage,
+	telegramMsgURL string,
+) ([]domain.Coupon, bool) {
 	parsed := domain.ParseMessage(msg.Text)
 	if len(parsed.Tokens) == 0 {
-		return
+		return nil, false
 	}
 
 	var lowestPrice *float64
@@ -655,6 +693,10 @@ func (s *MonitorService) matchProducts(ctx context.Context, interests []Compiled
 
 	var offerURL string
 	var offerURLExtracted bool
+
+	var extractedCoupons []domain.Coupon
+	var couponsExtracted bool
+	var relatedCouponCode string
 
 	for i := range interests {
 		interest := &interests[i]
@@ -684,30 +726,49 @@ func (s *MonitorService) matchProducts(ctx context.Context, interests []Compiled
 		}
 
 		if !offerURLExtracted {
-			offerURL = domain.ExtractFirstURL(msg.Text)
+			offerURL = domain.ExtractBestOfferURL(msg)
 			offerURLExtracted = true
 		}
 
+		if !couponsExtracted {
+			extractedCoupons = domain.ExtractCouponsWithEntities(msg.Text, msg.Entities)
+			couponsExtracted = true
+			if len(extractedCoupons) > 0 {
+				relatedCouponCode = extractedCoupons[0].Code
+			}
+		}
+
 		job := monitorJob{
-			kind:       jobKindProduct,
-			userID:     interest.UserID,
-			interestID: interest.ID,
-			channelID:  msg.ChannelID,
-			username:   interest.Username,
-			price:      lowestPrice,
-			text:       msg.Text,
-			offerURL:   offerURL,
+			kind:               jobKindProduct,
+			userID:             interest.UserID,
+			interestID:         interest.ID,
+			channelID:          msg.ChannelID,
+			username:           interest.Username,
+			matchedTerm:        interest.RawTerm,
+			price:              lowestPrice,
+			text:               msg.Text,
+			offerURL:           offerURL,
+			couponCode:         relatedCouponCode,
+			telegramMessageURL: telegramMsgURL,
 		}
 		s.enqueue(ctx, job)
 	}
+
+	return extractedCoupons, couponsExtracted
 }
 
-func (s *MonitorService) matchCoupons(ctx context.Context, msg domain.IncomingTelegramMessage) {
-	coupons := domain.ExtractCouponsWithEntities(msg.Text, msg.Entities)
+func (s *MonitorService) matchCoupons(
+	ctx context.Context,
+	msg domain.IncomingTelegramMessage,
+	coupons []domain.Coupon,
+	telegramMsgURL string,
+) {
 	if len(coupons) == 0 {
 		return
 	}
 
+	var fallbackURL string
+	var fallbackResolved bool
 	seenInMsg := make(map[string]struct{}, len(coupons))
 	for _, coupon := range coupons {
 		key := strings.ToUpper(strings.TrimSpace(coupon.Code)) + "|" + strings.ToLower(strings.TrimSpace(coupon.StoreName))
@@ -716,11 +777,22 @@ func (s *MonitorService) matchCoupons(ctx context.Context, msg domain.IncomingTe
 		}
 		seenInMsg[key] = struct{}{}
 
+		if !fallbackResolved {
+			if domain.ExtractFirstURL(msg.Text) == "" {
+				fallbackURL = domain.ExtractBestOfferURL(msg)
+			}
+			fallbackResolved = true
+		}
+		if fallbackURL != "" {
+			coupon.StoreURL = fallbackURL
+		}
+
 		job := monitorJob{
-			kind:      jobKindCoupon,
-			channelID: msg.ChannelID,
-			text:      msg.Text,
-			coupon:    coupon,
+			kind:               jobKindCoupon,
+			channelID:          msg.ChannelID,
+			text:               msg.Text,
+			telegramMessageURL: telegramMsgURL,
+			coupon:             coupon,
 		}
 		s.enqueue(ctx, job)
 	}

@@ -91,9 +91,27 @@ type PasswordHasher interface {
 	VerifyPassword(password, hash string) (bool, error)
 }
 
+type ProductNotification struct {
+	Username           string
+	MatchedTerm        string
+	Price              *float64
+	Text               string
+	OfferURL           string
+	CouponCode         string
+	TelegramMessageURL string
+}
+
+type CouponNotification struct {
+	Code               string
+	StoreName          string
+	StoreURL           string
+	Text               string
+	TelegramMessageURL string
+}
+
 type NotificationGateway interface {
-	SendProductNotification(ctx context.Context, username, offerURL string, price *float64, text string) error
-	SendCouponNotification(ctx context.Context, coupon domain.Coupon) error
+	SendProductNotification(ctx context.Context, notif ProductNotification) error
+	SendCouponNotification(ctx context.Context, notif CouponNotification) error
 }
 
 type TelegramClientPort interface {

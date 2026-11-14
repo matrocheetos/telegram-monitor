@@ -646,3 +646,152 @@ func TestExtractLowestPriceWithEntities_EmpiricalCorpus(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildTelegramMessageLink(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		chatID          int64
+		channelUsername string
+		messageID       int
+		want            string
+	}{
+		{
+			name:            "public channel without at prefix",
+			chatID:          -1001483635032,
+			channelUsername: "achadosmeli",
+			messageID:       4651,
+			want:            "https://t.me/achadosmeli/4651",
+		},
+		{
+			name:            "public channel with leading at and whitespace",
+			chatID:          -1001234567890,
+			channelUsername: "  @canal_ofertas ",
+			messageID:       123,
+			want:            "https://t.me/canal_ofertas/123",
+		},
+		{
+			name:            "private supergroup without username",
+			chatID:          -1001483635032,
+			channelUsername: "",
+			messageID:       456,
+			want:            "https://t.me/c/1483635032/456",
+		},
+		{
+			name:            "at-only username falls back to private supergroup",
+			chatID:          -1001483635032,
+			channelUsername: "@",
+			messageID:       456,
+			want:            "https://t.me/c/1483635032/456",
+		},
+		{
+			name:            "legacy basic group without username returns empty",
+			chatID:          -5551234,
+			channelUsername: "",
+			messageID:       78,
+			want:            "",
+		},
+		{
+			name:            "boundary channel offset returns empty",
+			chatID:          -1000000000000,
+			channelUsername: "",
+			messageID:       78,
+			want:            "",
+		},
+		{
+			name:            "zero message id returns empty",
+			chatID:          -1001483635032,
+			channelUsername: "achadosmeli",
+			messageID:       0,
+			want:            "",
+		},
+		{
+			name:            "negative message id returns empty",
+			chatID:          -1001483635032,
+			channelUsername: "",
+			messageID:       -10,
+			want:            "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := domain.BuildTelegramMessageLink(tt.chatID, tt.channelUsername, tt.messageID)
+			if got != tt.want {
+				t.Errorf("BuildTelegramMessageLink(%d, %q, %d) = %q, want %q",
+					tt.chatID, tt.channelUsername, tt.messageID, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExtractBestOfferURL(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		msg  domain.IncomingTelegramMessage
+		want string
+	}{
+		{
+			name: "plain text url takes priority",
+			msg: domain.IncomingTelegramMessage{
+				Text:       "Oferta: https://amzn.to/plain",
+				Entities:   []domain.TelegramEntityExcerpt{{Type: "text_url", URL: "https://amzn.to/entity"}},
+				WebPageURL: "https://amzn.to/webpage",
+			},
+			want: "https://amzn.to/plain",
+		},
+		{
+			name: "hidden text_url entity extracted when no plain url",
+			msg: domain.IncomingTelegramMessage{
+				Text: "Mousepad Fallen em oferta! Clique aqui",
+				Entities: []domain.TelegramEntityExcerpt{
+					{Type: "bold", Text: "Mousepad Fallen"},
+					{Type: "text_url", Text: "Clique aqui", URL: " https://meli.la/hidden "},
+				},
+				InlineButtons: []domain.TelegramInlineButton{{Text: "Comprar", URL: "https://meli.la/btn"}},
+			},
+			want: "https://meli.la/hidden",
+		},
+		{
+			name: "inline button url extracted when no plain or text_url",
+			msg: domain.IncomingTelegramMessage{
+				Text:          "SSD NVMe 1TB em promoção",
+				InlineButtons: []domain.TelegramInlineButton{{Text: "Abrir", URL: "https://magalu.com/p/1"}},
+				WebPageURL:    "https://magalu.com/preview",
+			},
+			want: "https://magalu.com/p/1",
+		},
+		{
+			name: "webpage url used as final fallback",
+			msg: domain.IncomingTelegramMessage{
+				Text:       "Monitor Gamer em promoção",
+				WebPageURL: "https://kabum.com.br/produto/123",
+			},
+			want: "https://kabum.com.br/produto/123",
+		},
+		{
+			name: "ignores non-http schemes",
+			msg: domain.IncomingTelegramMessage{
+				Text:          "Mensagem sem link http",
+				Entities:      []domain.TelegramEntityExcerpt{{Type: "text_url", URL: "tg://resolve?domain=foo"}},
+				InlineButtons: []domain.TelegramInlineButton{{Text: "Mail", URL: "mailto:test@example.com"}},
+				WebPageURL:    "ftp://files.example.com/a",
+			},
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := domain.ExtractBestOfferURL(tt.msg)
+			if got != tt.want {
+				t.Errorf("ExtractBestOfferURL() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

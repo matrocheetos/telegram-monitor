@@ -1,9 +1,30 @@
 package domain
 
 import (
+	"fmt"
 	"strings"
 	"time"
 )
+
+const telegramChannelIDPrefix int64 = 1000000000000
+
+func BuildTelegramMessageLink(chatID int64, channelUsername string, messageID int) string {
+	if messageID <= 0 {
+		return ""
+	}
+
+	cleanUsername := strings.TrimPrefix(strings.TrimSpace(channelUsername), "@")
+	if cleanUsername != "" {
+		return fmt.Sprintf("https://t.me/%s/%d", cleanUsername, messageID)
+	}
+
+	if chatID < -telegramChannelIDPrefix {
+		rawChannelID := -(chatID + telegramChannelIDPrefix)
+		return fmt.Sprintf("https://t.me/c/%d/%d", rawChannelID, messageID)
+	}
+
+	return ""
+}
 
 type ChannelFlagUpdate struct {
 	ChatID          int64

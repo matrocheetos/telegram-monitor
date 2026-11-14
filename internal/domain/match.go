@@ -1121,3 +1121,32 @@ func MatchProduct(interest *UserInterest, messageText string) (*ProductMatch, bo
 		ExtractedPrice: extractedPrice,
 	}, true
 }
+
+func isHTTPURL(raw string) bool {
+	lower := strings.ToLower(strings.TrimSpace(raw))
+	return strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://")
+}
+
+func ExtractBestOfferURL(msg IncomingTelegramMessage) string {
+	if first := ExtractFirstURL(msg.Text); isHTTPURL(first) {
+		return first
+	}
+
+	for _, ent := range msg.Entities {
+		if ent.Type == "text_url" && isHTTPURL(ent.URL) {
+			return strings.TrimSpace(ent.URL)
+		}
+	}
+
+	for _, btn := range msg.InlineButtons {
+		if isHTTPURL(btn.URL) {
+			return strings.TrimSpace(btn.URL)
+		}
+	}
+
+	if isHTTPURL(msg.WebPageURL) {
+		return strings.TrimSpace(msg.WebPageURL)
+	}
+
+	return ""
+}

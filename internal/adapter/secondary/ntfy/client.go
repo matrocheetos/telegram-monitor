@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/matrocheetos/telegram-monitor/internal/domain"
 	"github.com/matrocheetos/telegram-monitor/internal/port"
 )
 
@@ -99,7 +98,8 @@ func (c *Client) PublicTopicURL(logicalTopic string) string {
 type actionButton struct {
 	Action string `json:"action"`
 	Label  string `json:"label"`
-	Value  string `json:"value"`
+	URL    string `json:"url,omitempty"`
+	Value  string `json:"value,omitempty"`
 }
 
 type publishPayload struct {
@@ -111,57 +111,100 @@ type publishPayload struct {
 	Actions  []actionButton `json:"actions,omitempty"`
 }
 
-func (c *Client) SendProductNotification(ctx context.Context, username, offerURL string, price *float64, text string) error {
-	logicalTopic := "promo/user/" + username
+func (c *Client) resolveClickURL(telegramMessageURL, logicalTopic string) string {
+	if clean := strings.TrimSpace(telegramMessageURL); clean != "" {
+		return clean
+	}
+	return c.PublicTopicURL(logicalTopic)
+}
+
+func (c *Client) SendProductNotification(ctx context.Context, notif port.ProductNotification) error {
+	logicalTopic := "promo/user/" + notif.Username
 	topic := c.NormalizeTopic(logicalTopic)
 
+	matchedTerm := strings.TrimSpace(notif.MatchedTerm)
 	title := "🎯 Oferta Encontrada!"
-	var bodyBuilder strings.Builder
-	if price != nil {
-		fmt.Fprintf(&bodyBuilder, "💰 Preço: R$ %.2f\n\n", *price)
+	if matchedTerm != "" {
+		title = fmt.Sprintf("🎯 Oferta: %s", matchedTerm)
 	}
-	bodyBuilder.WriteString(text)
+
+	var bodyBuilder strings.Builder
+	bodyBuilder.Grow(len(notif.Text) + 96)
+	hasHeader := false
+	if matchedTerm != "" {
+		fmt.Fprintf(&bodyBuilder, "🔎 Termo: %s\n", matchedTerm)
+		hasHeader = true
+	}
+	if notif.Price != nil {
+		fmt.Fprintf(&bodyBuilder, "💰 Preço: R$ %.2f\n", *notif.Price)
+		hasHeader = true
+	}
+	if hasHeader && notif.Text != "" {
+		bodyBuilder.WriteByte('\n')
+	}
+	bodyBuilder.WriteString(notif.Text)
+
+	var actions []actionButton
+	if offerURL := strings.TrimSpace(notif.OfferURL); offerURL != "" {
+		actions = append(actions, actionButton{
+			Action: "view",
+			Label:  "Abrir Link",
+			URL:    offerURL,
+		})
+	}
+	if couponCode := strings.TrimSpace(notif.CouponCode); couponCode != "" {
+		actions = append(actions, actionButton{
+			Action: "copy",
+			Label:  "Copiar Cupom",
+			Value:  couponCode,
+		})
+	}
 
 	payload := publishPayload{
 		Topic:    topic,
 		Title:    title,
 		Message:  bodyBuilder.String(),
 		Priority: 4,
-		Click:    offerURL,
+		Click:    c.resolveClickURL(notif.TelegramMessageURL, logicalTopic),
+		Actions:  actions,
 	}
 
 	return c.publish(ctx, payload)
 }
 
-func (c *Client) SendCouponNotification(ctx context.Context, coupon domain.Coupon) error {
+func (c *Client) SendCouponNotification(ctx context.Context, notif port.CouponNotification) error {
 	logicalTopic := "promo/cupom"
 	topic := c.NormalizeTopic(logicalTopic)
 
-	title := fmt.Sprintf("🎟️ Cupom: %s (%s)", coupon.Code, coupon.StoreName)
-	var bodyBuilder strings.Builder
-	fmt.Fprintf(&bodyBuilder, "Loja: %s\n", coupon.StoreName)
-	fmt.Fprintf(&bodyBuilder, "Cupom: %s\n", coupon.Code)
-	if coupon.StoreURL != "" {
-		fmt.Fprintf(&bodyBuilder, "Link: %s\n", coupon.StoreURL)
+	code := strings.TrimSpace(notif.Code)
+	storeName := strings.TrimSpace(notif.StoreName)
+	title := fmt.Sprintf("🎟️ %s - %s", code, storeName)
+	if storeName == "" {
+		title = fmt.Sprintf("🎟️ %s", code)
 	}
 
 	var actions []actionButton
-	if coupon.Code != "" {
-		actions = []actionButton{
-			{
-				Action: "copy",
-				Label:  "Copiar Cupom",
-				Value:  coupon.Code,
-			},
-		}
+	if storeURL := strings.TrimSpace(notif.StoreURL); storeURL != "" {
+		actions = append(actions, actionButton{
+			Action: "view",
+			Label:  "Abrir Link",
+			URL:    storeURL,
+		})
+	}
+	if code != "" {
+		actions = append(actions, actionButton{
+			Action: "copy",
+			Label:  "Copiar Cupom",
+			Value:  code,
+		})
 	}
 
 	payload := publishPayload{
 		Topic:    topic,
 		Title:    title,
-		Message:  bodyBuilder.String(),
+		Message:  notif.Text,
 		Priority: 4,
-		Click:    coupon.StoreURL,
+		Click:    c.resolveClickURL(notif.TelegramMessageURL, logicalTopic),
 		Actions:  actions,
 	}
 

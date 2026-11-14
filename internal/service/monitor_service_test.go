@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/matrocheetos/telegram-monitor/internal/domain"
+	"github.com/matrocheetos/telegram-monitor/internal/port"
 	"github.com/matrocheetos/telegram-monitor/internal/service"
 )
 
@@ -312,22 +313,22 @@ func (m *mockCouponRepo) CountTotal(ctx context.Context) (int64, error) {
 }
 
 type mockNotificationGateway struct {
-	mu           sync.Mutex
-	productNotifs []string
-	couponNotifs  []domain.Coupon
+	mu            sync.Mutex
+	productNotifs []port.ProductNotification
+	couponNotifs  []port.CouponNotification
 }
 
-func (m *mockNotificationGateway) SendProductNotification(ctx context.Context, username, offerURL string, price *float64, text string) error {
+func (m *mockNotificationGateway) SendProductNotification(ctx context.Context, notif port.ProductNotification) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.productNotifs = append(m.productNotifs, fmt.Sprintf("%s:%s", username, offerURL))
+	m.productNotifs = append(m.productNotifs, notif)
 	return nil
 }
 
-func (m *mockNotificationGateway) SendCouponNotification(ctx context.Context, coupon domain.Coupon) error {
+func (m *mockNotificationGateway) SendCouponNotification(ctx context.Context, notif port.CouponNotification) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.couponNotifs = append(m.couponNotifs, coupon)
+	m.couponNotifs = append(m.couponNotifs, notif)
 	return nil
 }
 
@@ -414,9 +415,12 @@ func TestMonitorService_ProductMatch(t *testing.T) {
 		t.Fatalf("expected 1 product notification, got %d", len(gateway.productNotifs))
 	}
 
-	expectedPrefix := "mateus:https://loja.com/rtx"
-	if gateway.productNotifs[0] != expectedPrefix {
-		t.Errorf("expected notif %q, got %q", expectedPrefix, gateway.productNotifs[0])
+	gotNotif := gateway.productNotifs[0]
+	if gotNotif.Username != "mateus" || gotNotif.OfferURL != "https://loja.com/rtx" {
+		t.Errorf("unexpected notif %+v", gotNotif)
+	}
+	if gotNotif.MatchedTerm != "RTX 4060 -ti" {
+		t.Errorf("expected MatchedTerm 'RTX 4060 -ti', got %q", gotNotif.MatchedTerm)
 	}
 
 	matchRepo.mu.Lock()
@@ -1361,5 +1365,204 @@ func TestMonitorService_DebugMode_DeliversCouponNotification(t *testing.T) {
 	if debugCount != 1 {
 		t.Fatalf("expected 1 debug record, got %d", debugCount)
 	}
+}
+
+func TestMonitorService_NotificationEnrichment(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	userRepo := &mockUserRepo{
+		users: []*domain.User{
+			{ID: 1, Username: "mateus", NtfyTopic: "promo/user/mateus"},
+		},
+	}
+	interest, err := domain.NewUserInterest(1, "nintendo switch oled", nil)
+	if err != nil {
+		t.Fatalf("NewUserInterest failed: %v", err)
+	}
+	interest.ID = 11
+	interestRepo := &mockInterestRepo{
+		interests: []*domain.UserInterest{interest},
+	}
+
+	channelRepo := newMockChannelRepo()
+	_ = channelRepo.UpsertChannel(ctx, &domain.TelegramChannel{
+		ChatID:          -1001483635032,
+		Username:        "achadosmeli",
+		Title:           "Achados Meli",
+		MonitorProducts: true,
+		MonitorCoupons:  false,
+	})
+	_ = channelRepo.UpsertChannel(ctx, &domain.TelegramChannel{
+		ChatID:          -1009998887776,
+		Username:        "",
+		Title:           "Grupo Privado VIP",
+		MonitorProducts: true,
+		MonitorCoupons:  true,
+	})
+
+	t.Run("non-debug path enriches product with coupon even when MonitorCoupons is false", func(t *testing.T) {
+		gateway := &mockNotificationGateway{}
+		svc := service.NewMonitorService(
+			userRepo,
+			interestRepo,
+			channelRepo,
+			&mockMatchRepo{},
+			&mockCouponRepo{},
+			gateway,
+			service.MonitorConfig{WorkerCount: 2, QueueSize: 32},
+		)
+		if err := svc.RebuildSnapshot(ctx); err != nil {
+			t.Fatalf("RebuildSnapshot failed: %v", err)
+		}
+
+		svc.Start(ctx)
+
+		msgWithCoupon := domain.IncomingTelegramMessage{
+			ChannelID:         -1001483635032,
+			TelegramMessageID: 4651,
+			Text:              "Console Nintendo Switch OLED Branco\n🎟️ Cupom: SWITCH150\nR$ 1.899,00\nhttps://meli.la/switch",
+		}
+		if err := svc.ProcessIncomingTelegramMessage(ctx, msgWithCoupon); err != nil {
+			t.Fatalf("ProcessIncomingTelegramMessage failed: %v", err)
+		}
+
+		msgHiddenButton := domain.IncomingTelegramMessage{
+			ChannelID:         -1009998887776,
+			TelegramMessageID: 456,
+			Text:              "Console Nintendo Switch OLED por R$ 1.999,00 sem cupom!",
+			InlineButtons: []domain.TelegramInlineButton{
+				{Text: "Comprar agora", URL: "https://amzn.to/hidden-btn"},
+			},
+		}
+		if err := svc.ProcessIncomingTelegramMessage(ctx, msgHiddenButton); err != nil {
+			t.Fatalf("ProcessIncomingTelegramMessage failed: %v", err)
+		}
+
+		msgCouponOnly := domain.IncomingTelegramMessage{
+			ChannelID:         -1009998887776,
+			TelegramMessageID: 789,
+			Text:              "🚨 Cupom Mercado Livre: PROMO10\nResgate no app!",
+			InlineButtons: []domain.TelegramInlineButton{
+				{Text: "Resgatar", URL: "https://meli.la/coupon-btn"},
+			},
+		}
+		if err := svc.ProcessIncomingTelegramMessage(ctx, msgCouponOnly); err != nil {
+			t.Fatalf("ProcessIncomingTelegramMessage failed: %v", err)
+		}
+
+		svc.Stop()
+
+		gateway.mu.Lock()
+		defer gateway.mu.Unlock()
+
+		if len(gateway.productNotifs) != 2 {
+			t.Fatalf("expected 2 product notifications, got %d", len(gateway.productNotifs))
+		}
+
+		byURL := make(map[string]port.ProductNotification, len(gateway.productNotifs))
+		for _, pn := range gateway.productNotifs {
+			byURL[pn.TelegramMessageURL] = pn
+		}
+
+		firstProd, ok := byURL["https://t.me/achadosmeli/4651"]
+		if !ok {
+			t.Fatalf("missing public channel product notification; got %+v", gateway.productNotifs)
+		}
+		if firstProd.MatchedTerm != "nintendo switch oled" {
+			t.Errorf("expected MatchedTerm 'nintendo switch oled', got %q", firstProd.MatchedTerm)
+		}
+		if firstProd.CouponCode != "SWITCH150" {
+			t.Errorf("expected related CouponCode SWITCH150 even with MonitorCoupons=false, got %q", firstProd.CouponCode)
+		}
+		if firstProd.OfferURL != "https://meli.la/switch" {
+			t.Errorf("expected OfferURL 'https://meli.la/switch', got %q", firstProd.OfferURL)
+		}
+		if firstProd.Text != msgWithCoupon.Text {
+			t.Errorf("expected original text preserved, got %q", firstProd.Text)
+		}
+
+		secondProd, ok := byURL["https://t.me/c/9998887776/456"]
+		if !ok {
+			t.Fatalf("missing private supergroup product notification; got %+v", gateway.productNotifs)
+		}
+		if secondProd.CouponCode != "" {
+			t.Errorf("expected empty CouponCode when no coupon present, got %q", secondProd.CouponCode)
+		}
+		if secondProd.OfferURL != "https://amzn.to/hidden-btn" {
+			t.Errorf("expected hidden button OfferURL 'https://amzn.to/hidden-btn', got %q", secondProd.OfferURL)
+		}
+		if secondProd.Text != msgHiddenButton.Text {
+			t.Errorf("expected original text preserved, got %q", secondProd.Text)
+		}
+
+		if len(gateway.couponNotifs) != 1 {
+			t.Fatalf("expected 1 coupon notification (from MonitorCoupons=true channel only), got %d", len(gateway.couponNotifs))
+		}
+		couponNotif := gateway.couponNotifs[0]
+		if couponNotif.Code != "PROMO10" || couponNotif.StoreName != "Mercado Livre" {
+			t.Errorf("unexpected coupon notif: %+v", couponNotif)
+		}
+		if couponNotif.StoreURL != "https://meli.la/coupon-btn" {
+			t.Errorf("expected hidden button StoreURL 'https://meli.la/coupon-btn', got %q", couponNotif.StoreURL)
+		}
+		if couponNotif.Text != msgCouponOnly.Text {
+			t.Errorf("expected original coupon message text %q, got %q", msgCouponOnly.Text, couponNotif.Text)
+		}
+		if couponNotif.TelegramMessageURL != "https://t.me/c/9998887776/789" {
+			t.Errorf("expected TelegramMessageURL 'https://t.me/c/9998887776/789', got %q", couponNotif.TelegramMessageURL)
+		}
+	})
+
+	t.Run("debug path propagates enrichment fields identically", func(t *testing.T) {
+		gateway := &mockNotificationGateway{}
+		debugRepo := &mockDebugMessageRepo{}
+		svc := service.NewMonitorService(
+			userRepo,
+			interestRepo,
+			channelRepo,
+			&mockMatchRepo{},
+			&mockCouponRepo{},
+			gateway,
+			service.MonitorConfig{WorkerCount: 2, QueueSize: 32},
+		)
+		svc.SetDebugRepository(debugRepo)
+		if err := svc.RebuildSnapshot(ctx); err != nil {
+			t.Fatalf("RebuildSnapshot failed: %v", err)
+		}
+
+		svc.Start(ctx)
+		msg := domain.IncomingTelegramMessage{
+			ChannelID:         -1001483635032,
+			TelegramMessageID: 5000,
+			Text:              "Nintendo Switch OLED Branco - Clique aqui\nCupom: DEBUG50",
+			Entities: []domain.TelegramEntityExcerpt{
+				{Type: "text_url", Text: "Clique aqui", URL: "https://amzn.to/debug-entity"},
+			},
+		}
+		if err := svc.ProcessIncomingTelegramMessage(ctx, msg); err != nil {
+			t.Fatalf("ProcessIncomingTelegramMessage failed: %v", err)
+		}
+		svc.Stop()
+
+		gateway.mu.Lock()
+		defer gateway.mu.Unlock()
+		if len(gateway.productNotifs) != 1 {
+			t.Fatalf("expected 1 product notification in debug mode, got %d", len(gateway.productNotifs))
+		}
+		got := gateway.productNotifs[0]
+		if got.MatchedTerm != "nintendo switch oled" {
+			t.Errorf("expected MatchedTerm 'nintendo switch oled', got %q", got.MatchedTerm)
+		}
+		if got.CouponCode != "DEBUG50" {
+			t.Errorf("expected CouponCode DEBUG50, got %q", got.CouponCode)
+		}
+		if got.OfferURL != "https://amzn.to/debug-entity" {
+			t.Errorf("expected OfferURL 'https://amzn.to/debug-entity', got %q", got.OfferURL)
+		}
+		if got.TelegramMessageURL != "https://t.me/achadosmeli/5000" {
+			t.Errorf("expected TelegramMessageURL 'https://t.me/achadosmeli/5000', got %q", got.TelegramMessageURL)
+		}
+	})
 }
 
