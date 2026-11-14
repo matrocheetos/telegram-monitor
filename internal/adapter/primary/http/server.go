@@ -137,6 +137,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux, allowSwagger bool) {
 	// Admin Users
 	mux.HandleFunc("GET /api/v1/admin/users", s.handleAdminUsersGet)
 	mux.HandleFunc("POST /api/v1/admin/users", s.handleAdminUsersCreatePost)
+	mux.HandleFunc("GET /api/v1/admin/users/{id}/interests", s.handleAdminUsersInterestsGet)
 	mux.HandleFunc("PUT /api/v1/admin/users/{id}/password", s.handleAdminUsersPasswordPut)
 	mux.HandleFunc("DELETE /api/v1/admin/users/{id}", s.handleAdminUsersDelete)
 }

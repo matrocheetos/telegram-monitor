@@ -3,7 +3,25 @@ package http
 import (
 	"net/http"
 	"strconv"
+
+	"github.com/matrocheetos/telegram-monitor/internal/domain"
 )
+
+func toInterestItems(interests []*domain.UserInterest) []InterestItem {
+	items := make([]InterestItem, 0, len(interests))
+	for _, item := range interests {
+		items = append(items, InterestItem{
+			ID:             item.ID,
+			RawTerm:        item.RawTerm,
+			PositiveTokens: item.PositiveTokens,
+			NegativeTokens: item.NegativeTokens,
+			MaxPrice:       item.MaxPrice,
+			Active:         item.Active,
+			CreatedAt:      item.CreatedAt,
+		})
+	}
+	return items
+}
 
 // handleDashboardGet godoc
 // @Summary      Get dashboard summary
@@ -41,18 +59,7 @@ func (s *Server) handleDashboardGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	items := make([]InterestItem, 0, len(interests))
-	for _, item := range interests {
-		items = append(items, InterestItem{
-			ID:             item.ID,
-			RawTerm:        item.RawTerm,
-			PositiveTokens: item.PositiveTokens,
-			NegativeTokens: item.NegativeTokens,
-			MaxPrice:       item.MaxPrice,
-			Active:         item.Active,
-			CreatedAt:      item.CreatedAt,
-		})
-	}
+	items := toInterestItems(interests)
 
 	userTopic := s.ntfyTopicPrefix + user.NtfyTopic
 	couponsTopic := s.ntfyTopicPrefix + "promo/cupom"
@@ -93,18 +100,7 @@ func (s *Server) handleInterestsGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	items := make([]InterestItem, 0, len(interests))
-	for _, item := range interests {
-		items = append(items, InterestItem{
-			ID:             item.ID,
-			RawTerm:        item.RawTerm,
-			PositiveTokens: item.PositiveTokens,
-			NegativeTokens: item.NegativeTokens,
-			MaxPrice:       item.MaxPrice,
-			Active:         item.Active,
-			CreatedAt:      item.CreatedAt,
-		})
-	}
+	items := toInterestItems(interests)
 
 	writeJSON(w, http.StatusOK, items)
 }

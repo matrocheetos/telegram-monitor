@@ -1531,3 +1531,45 @@ func TestAdminUsersGet_PropagatesCountError(t *testing.T) {
 		t.Fatalf("expected 500 when CountActiveInterestsByUser fails, got %d", rec.Code)
 	}
 }
+
+func TestAdminUsersInterestsGet(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("admin lists target user active interests", func(t *testing.T) {
+		fix := setupFixture(t, false, true)
+		req := newJSONRequest(ctx, http.MethodGet, "/api/v1/admin/users/2/interests", nil, newSessionCookie(fix.adminToken), "")
+		rec := httptest.NewRecorder()
+		fix.server.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+
+		var items []adapterHTTP.InterestItem
+		if err := json.Unmarshal(rec.Body.Bytes(), &items); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if len(items) != 1 || items[0].RawTerm != "switch oled" {
+			t.Fatalf("expected 1 interest 'switch oled', got %+v", items)
+		}
+	})
+
+	t.Run("non-admin user is forbidden", func(t *testing.T) {
+		fix := setupFixture(t, false, true)
+		req := newJSONRequest(ctx, http.MethodGet, "/api/v1/admin/users/2/interests", nil, newSessionCookie(fix.regularToken), "")
+		rec := httptest.NewRecorder()
+		fix.server.ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("expected 403, got %d", rec.Code)
+		}
+	})
+
+	t.Run("invalid user id returns 400", func(t *testing.T) {
+		fix := setupFixture(t, false, true)
+		req := newJSONRequest(ctx, http.MethodGet, "/api/v1/admin/users/abc/interests", nil, newSessionCookie(fix.adminToken), "")
+		rec := httptest.NewRecorder()
+		fix.server.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d", rec.Code)
+		}
+	})
+}

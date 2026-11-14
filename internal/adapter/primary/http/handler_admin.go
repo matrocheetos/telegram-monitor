@@ -358,6 +358,35 @@ func (s *Server) handleAdminUsersCreatePost(w http.ResponseWriter, r *http.Reque
 	})
 }
 
+// handleAdminUsersInterestsGet godoc
+// @Summary      List user active interests
+// @Description  Returns all monitored product search terms for the specified user ID
+// @Tags         Admin Users
+// @Produce      json
+// @Param        id   path      int  true  "User ID"
+// @Success      200  {array}   InterestItem
+// @Failure      400  {object}  ErrorEnvelope
+// @Failure      401  {object}  ErrorEnvelope
+// @Failure      403  {object}  ErrorEnvelope
+// @Security     CookieAuth
+// @Router       /admin/users/{id}/interests [get]
+func (s *Server) handleAdminUsersInterestsGet(w http.ResponseWriter, r *http.Request) {
+	idStr := r.PathValue("id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil || id <= 0 {
+		writeErrorJSON(w, http.StatusBadRequest, "invalid_id", "invalid user id")
+		return
+	}
+
+	interests, err := s.interestUseCase.ListUserInterests(r.Context(), id)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, toInterestItems(interests))
+}
+
 // handleAdminUsersPasswordPut godoc
 // @Summary      Reset user password
 // @Description  Resets password for the specified user ID
