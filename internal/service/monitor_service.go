@@ -443,10 +443,10 @@ func (s *MonitorService) ProcessIncomingTelegramMessage(ctx context.Context, msg
 			return nil
 		}
 		if flags.MonitorProducts && len(snap.Interests) > 0 {
-			s.matchProducts(ctx, snap.Interests, msg.ChannelID, msg.Text)
+			s.matchProducts(ctx, snap.Interests, msg)
 		}
 		if flags.MonitorCoupons {
-			s.matchCoupons(ctx, msg.ChannelID, msg.Text)
+			s.matchCoupons(ctx, msg)
 		}
 		return nil
 	}
@@ -463,13 +463,17 @@ func (s *MonitorService) processAndDebugTelegramMessage(
 	msg domain.IncomingTelegramMessage,
 ) {
 	rawText := msg.Text
-	normalizedText := domain.NormalizeText(rawText)
-	tokens := domain.Tokenize(rawText)
+	parsed := domain.ParseMessage(rawText)
+	normalizedText := parsed.NormalizedText
+	tokens := parsed.Tokens
+	if tokens == nil {
+		tokens = []string{}
+	}
 	allPrices := domain.ExtractAllPrices(rawText)
 	pricesFoundCount := len(allPrices)
 
 	var extractedLowestPrice *float64
-	if p, found := domain.ExtractLowestPrice(rawText); found {
+	if p, found := domain.ExtractLowestPriceWithEntities(rawText, msg.Entities); found {
 		extractedLowestPrice = &p
 	}
 
@@ -488,43 +492,20 @@ func (s *MonitorService) processAndDebugTelegramMessage(
 
 	var matchedInterests []domain.DebugMatchedInterestSummary
 	if channelKnown && flags.MonitorProducts && len(snap.Interests) > 0 && len(tokens) > 0 {
-		tokenSet := domain.BuildTokenSet(tokens)
 		var offerURL string
 		var offerURLExtracted bool
 
 		for i := range snap.Interests {
 			interest := &snap.Interests[i]
-
-			negMatched := false
-			for _, neg := range interest.NegativeTokens {
-				if _, exists := tokenSet[neg]; exists {
-					negMatched = true
-					break
-				}
+			candidate := domain.UserInterest{
+				ID:             interest.ID,
+				UserID:         interest.UserID,
+				PositiveTokens: interest.PositiveTokens,
+				NegativeTokens: interest.NegativeTokens,
+				MaxPrice:       interest.MaxPrice,
+				Active:         true,
 			}
-			if negMatched {
-				continue
-			}
-
-			posMatched := true
-			for _, pos := range interest.PositiveTokens {
-				tokFound := false
-				if _, exists := tokenSet[pos]; exists {
-					tokFound = true
-				} else if len(pos) >= 5 {
-					for tok := range tokenSet {
-						if domain.IsLevenshteinLE1(pos, tok) {
-							tokFound = true
-							break
-						}
-					}
-				}
-				if !tokFound {
-					posMatched = false
-					break
-				}
-			}
-			if !posMatched {
+			if !domain.MatchParsedMessage(&candidate, &parsed) {
 				continue
 			}
 
@@ -562,7 +543,7 @@ func (s *MonitorService) processAndDebugTelegramMessage(
 
 	var extractedCoupons []domain.DebugExtractedCouponSummary
 	var dedupCount int
-	allCoupons := domain.ExtractCoupons(rawText)
+	allCoupons := domain.ExtractCouponsWithEntities(rawText, msg.Entities)
 
 	if len(allCoupons) > 0 {
 		seenInMsg := make(map[string]struct{}, len(allCoupons))
@@ -663,13 +644,12 @@ func (s *MonitorService) processAndDebugTelegramMessage(
 	})
 }
 
-func (s *MonitorService) matchProducts(ctx context.Context, interests []CompiledInterest, channelID int64, messageText string) {
-	msgTokens := domain.Tokenize(messageText)
-	if len(msgTokens) == 0 {
+func (s *MonitorService) matchProducts(ctx context.Context, interests []CompiledInterest, msg domain.IncomingTelegramMessage) {
+	parsed := domain.ParseMessage(msg.Text)
+	if len(parsed.Tokens) == 0 {
 		return
 	}
 
-	tokenSet := domain.BuildTokenSet(msgTokens)
 	var lowestPrice *float64
 	var priceExtracted bool
 
@@ -678,42 +658,20 @@ func (s *MonitorService) matchProducts(ctx context.Context, interests []Compiled
 
 	for i := range interests {
 		interest := &interests[i]
-
-		negMatched := false
-		for _, neg := range interest.NegativeTokens {
-			if _, exists := tokenSet[neg]; exists {
-				negMatched = true
-				break
-			}
+		candidate := domain.UserInterest{
+			ID:             interest.ID,
+			UserID:         interest.UserID,
+			PositiveTokens: interest.PositiveTokens,
+			NegativeTokens: interest.NegativeTokens,
+			MaxPrice:       interest.MaxPrice,
+			Active:         true,
 		}
-		if negMatched {
-			continue
-		}
-
-		posMatched := true
-		for _, pos := range interest.PositiveTokens {
-			tokFound := false
-			if _, exists := tokenSet[pos]; exists {
-				tokFound = true
-			} else if len(pos) >= 5 {
-				for tok := range tokenSet {
-					if domain.IsLevenshteinLE1(pos, tok) {
-						tokFound = true
-						break
-					}
-				}
-			}
-			if !tokFound {
-				posMatched = false
-				break
-			}
-		}
-		if !posMatched {
+		if !domain.MatchParsedMessage(&candidate, &parsed) {
 			continue
 		}
 
 		if !priceExtracted {
-			if p, found := domain.ExtractLowestPrice(messageText); found {
+			if p, found := domain.ExtractLowestPriceWithEntities(msg.Text, msg.Entities); found {
 				lowestPrice = &p
 			}
 			priceExtracted = true
@@ -726,7 +684,7 @@ func (s *MonitorService) matchProducts(ctx context.Context, interests []Compiled
 		}
 
 		if !offerURLExtracted {
-			offerURL = domain.ExtractFirstURL(messageText)
+			offerURL = domain.ExtractFirstURL(msg.Text)
 			offerURLExtracted = true
 		}
 
@@ -734,18 +692,18 @@ func (s *MonitorService) matchProducts(ctx context.Context, interests []Compiled
 			kind:       jobKindProduct,
 			userID:     interest.UserID,
 			interestID: interest.ID,
-			channelID:  channelID,
+			channelID:  msg.ChannelID,
 			username:   interest.Username,
 			price:      lowestPrice,
-			text:       messageText,
+			text:       msg.Text,
 			offerURL:   offerURL,
 		}
 		s.enqueue(ctx, job)
 	}
 }
 
-func (s *MonitorService) matchCoupons(ctx context.Context, channelID int64, messageText string) {
-	coupons := domain.ExtractCoupons(messageText)
+func (s *MonitorService) matchCoupons(ctx context.Context, msg domain.IncomingTelegramMessage) {
+	coupons := domain.ExtractCouponsWithEntities(msg.Text, msg.Entities)
 	if len(coupons) == 0 {
 		return
 	}
@@ -760,8 +718,8 @@ func (s *MonitorService) matchCoupons(ctx context.Context, channelID int64, mess
 
 		job := monitorJob{
 			kind:      jobKindCoupon,
-			channelID: channelID,
-			text:      messageText,
+			channelID: msg.ChannelID,
+			text:      msg.Text,
 			coupon:    coupon,
 		}
 		s.enqueue(ctx, job)

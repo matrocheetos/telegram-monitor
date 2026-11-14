@@ -5,6 +5,15 @@ import (
 	"time"
 )
 
+var portugueseStopWords = map[string]struct{}{
+	"a": {}, "as": {}, "o": {}, "os": {}, "e": {}, "ou": {},
+	"de": {}, "do": {}, "da": {}, "dos": {}, "das": {},
+	"em": {}, "no": {}, "na": {}, "nos": {}, "nas": {},
+	"por": {}, "para": {}, "pra": {}, "com": {}, "sem": {},
+	"sob": {}, "sobre": {}, "ate": {}, "entre": {},
+	"um": {}, "uma": {}, "uns": {}, "umas": {}, "ao": {}, "aos": {},
+}
+
 type UserInterest struct {
 	ID             int64     `json:"id" db:"id"`
 	UserID         int64     `json:"user_id" db:"user_id"`
@@ -51,6 +60,9 @@ func NewUserInterest(userID int64, rawTerm string, maxPrice *float64) (*UserInte
 
 		tokens := Tokenize(word)
 		for _, tok := range tokens {
+			if _, isStopWord := portugueseStopWords[tok]; isStopWord {
+				continue
+			}
 			if _, exists := posSet[tok]; !exists {
 				posSet[tok] = struct{}{}
 				positiveTokens = append(positiveTokens, tok)

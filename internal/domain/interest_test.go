@@ -92,5 +92,81 @@ func TestNewUserInterest(t *testing.T) {
 			t.Fatalf("expected ErrInvalidPrice, got %v", err)
 		}
 	})
+
+	t.Run("filters portuguese stopwords while preserving model tokens", func(t *testing.T) {
+		t.Parallel()
+
+		tests := []struct {
+			name     string
+			rawTerm  string
+			wantPos  []string
+			wantErr  error
+		}{
+			{
+				name:    "filters prepositions",
+				rawTerm: "controle para ps5",
+				wantPos: []string{"controle", "ps5"},
+			},
+			{
+				name:    "filters de and para in monitor query",
+				rawTerm: "monitor de 27 para pc",
+				wantPos: []string{"monitor", "27", "pc"},
+			},
+			{
+				name:    "preserves alphanumeric model suffixes",
+				rawTerm: "iphone 16e",
+				wantPos: []string{"iphone", "16e"},
+			},
+			{
+				name:    "preserves cpu and motherboard skus",
+				rawTerm: "ryzen 5 5500f a520m ddr5",
+				wantPos: []string{"ryzen", "5", "5500f", "a520m", "ddr5"},
+			},
+			{
+				name:    "preserves galaxy s25 and intel hx",
+				rawTerm: "galaxy s25 i5 13450hx",
+				wantPos: []string{"galaxy", "s25", "i5", "13450hx"},
+			},
+			{
+				name:    "preserves m2 hardware form factor",
+				rawTerm: "ssd m.2 512gb",
+				wantPos: []string{"ssd", "m2", "512", "gb"},
+			},
+			{
+				name:    "rejects stopword only term por",
+				rawTerm: "por",
+				wantErr: domain.ErrEmptyInterestTerm,
+			},
+			{
+				name:    "rejects multiple stopwords only",
+				rawTerm: "para o de e com",
+				wantErr: domain.ErrEmptyInterestTerm,
+			},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
+				got, err := domain.NewUserInterest(1, tt.rawTerm, nil)
+				if tt.wantErr != nil {
+					if !errors.Is(err, tt.wantErr) {
+						t.Fatalf("NewUserInterest(%q) err = %v, want %v", tt.rawTerm, err, tt.wantErr)
+					}
+					return
+				}
+				if err != nil {
+					t.Fatalf("NewUserInterest(%q) unexpected err: %v", tt.rawTerm, err)
+				}
+				if len(got.PositiveTokens) != len(tt.wantPos) {
+					t.Fatalf("PositiveTokens = %v, want %v", got.PositiveTokens, tt.wantPos)
+				}
+				for i, tok := range tt.wantPos {
+					if got.PositiveTokens[i] != tok {
+						t.Errorf("PositiveTokens[%d] = %q, want %q", i, got.PositiveTokens[i], tok)
+					}
+				}
+			})
+		}
+	})
 }
 

@@ -233,3 +233,224 @@ func TestIdentifyStoreFromText(t *testing.T) {
 		})
 	}
 }
+
+func TestExtractCoupons_EmpiricalCorpus(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		text      string
+		entities  []domain.TelegramEntityExcerpt
+		wantCodes []string
+		wantStore string
+	}{
+		{
+			name:      "ID=70 multi coupon with plus and moedas",
+			text:      "Novo Monitor ARZOPA 27\n💵 R$ 810 com cupom: M1RC35BR + AEMEGA15 + moedas no app no app no app\nhttps://a.aliexpress.com/_c37MYOll",
+			wantCodes: []string{"M1RC35BR", "AEMEGA15"},
+			wantStore: "AliExpress",
+		},
+		{
+			name:      "ID=500 multi coupon plus and ou",
+			text:      "#Aliexpress - Nvme 2TB\n🏷️ Use cupom: HB3001 + AEMEGA12 ou AEMEGA6 + Moedas no App\nhttps://a.aliexpress.com/_c2RtOLvh",
+			wantCodes: []string{"HB3001", "AEMEGA12", "AEMEGA6"},
+			wantStore: "AliExpress",
+		},
+		{
+			name:      "ID=2491 multi coupon ou",
+			text:      "🏷️ Use cupom: AEMEGA15 ou AEMEGA4\nhttps://a.aliexpress.com/_c3example",
+			wantCodes: []string{"AEMEGA15", "AEMEGA4"},
+			wantStore: "AliExpress",
+		},
+		{
+			name:      "ID=2678 three coupons with ou",
+			text:      "🏷 Cupom: IFPIU15T ou VIVAAE01 ou VAMOS03\nhttps://a.aliexpress.com/_c3example",
+			wantCodes: []string{"IFPIU15T", "VIVAAE01", "VAMOS03"},
+			wantStore: "AliExpress",
+		},
+		{
+			name:      "ID=3017 ou plus moedas",
+			text:      "🏷 Cupom: AFFNOV01 ou AEMEGA1 + Moedas no App\nhttps://a.aliexpress.com/_c3example",
+			wantCodes: []string{"AFFNOV01", "AEMEGA1"},
+			wantStore: "AliExpress",
+		},
+		{
+			name:      "ID=3136 multi coupon ignores 63 moedas",
+			text:      "🏷 Cupom: NETAC05 + AFFNOV03 ou AEMEGA3 + 63 Moedas no app\nhttps://a.aliexpress.com/_c3example",
+			wantCodes: []string{"NETAC05", "AFFNOV03", "AEMEGA3"},
+			wantStore: "AliExpress",
+		},
+		{
+			name:      "ID=4139 multi coupon ignores Seleccione Pix",
+			text:      "Use o Cupom: POUPEMELI ou CLIENTEVIP 🎟️ + Selecione Pix\nhttps://meli.la/2example",
+			wantCodes: []string{"POUPEMELI", "CLIENTEVIP"},
+			wantStore: "Mercado Livre",
+		},
+		{
+			name:      "ID=4529 multi coupon with attached ticket emoji",
+			text:      "De R$ 119 por R$ 29\nUse o Cupom: POUPEMELI ou MAISDESCONTO🎟️\nhttps://meli.la/264goLY",
+			wantCodes: []string{"POUPEMELI", "MAISDESCONTO"},
+			wantStore: "Mercado Livre",
+		},
+		{
+			name:      "ID=356 rejects lowercase abaixo",
+			text:      "🎟 Ative o cupom abaixo do preço!\nhttps://meli.la/2example",
+			wantCodes: []string{},
+		},
+		{
+			name:      "ID=433 rejects lowercase der and identifies Netshoes",
+			text:      "FILA BÁSICO PRA CORRIDA\nUse o Cupom: BLACK11 🎟️\n\nLoja Oficial Netshoes\nhttps://promo.xetlinks.com/dVJGW4J3\n\n- se o cupom der erro, acesse pelo link",
+			wantCodes: []string{"BLACK11"},
+			wantStore: "Netshoes",
+		},
+		{
+			name:      "ID=1699 rejects Title Case Mercado",
+			text:      "Cupom Mercado Livre Tecnologia - R$ 300 OFF em R$ 2699\n\n-Cupom: OFERTAPRATEC",
+			wantCodes: []string{"OFERTAPRATEC"},
+			wantStore: "Mercado Livre",
+		},
+		{
+			name:      "ID=1807 rejects uppercase adjective FORTE",
+			text:      "Olha o cupom FORTE do Meli, aproveitem!",
+			wantCodes: []string{},
+		},
+		{
+			name:      "ID=1881 rejects Dragon Quest Title Case Echoes",
+			text:      "🔥[Mídia Física] Dragon Quest XI S: Echoes of an Elusive Age NS2 e use cupom LIVROSJOGOS1311\nhttps://meli.la/2example",
+			wantCodes: []string{"LIVROSJOGOS1311"},
+			wantStore: "Mercado Livre",
+		},
+		{
+			name: "MessageEntityCode extracts lowercase monospaced coupon when indicator present",
+			text: "🔥 Cupom exclusivo: aplique promo10 no site",
+			entities: []domain.TelegramEntityExcerpt{
+				{Type: "code", Offset: 28, Length: 7},
+			},
+			wantCodes: []string{"PROMO10"},
+		},
+		{
+			name: "MessageEntityCode ignores stopwords",
+			text: "🎟️ Oferta no mercado hoje",
+			entities: []domain.TelegramEntityExcerpt{
+				{Type: "code", Text: "mercado"},
+			},
+			wantCodes: []string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := domain.ExtractCouponsWithEntities(tt.text, tt.entities)
+			if len(got) != len(tt.wantCodes) {
+				t.Fatalf("ExtractCouponsWithEntities() got %d coupons (%v), want %d (%v)",
+					len(got), got, len(tt.wantCodes), tt.wantCodes)
+			}
+			for i, wantCode := range tt.wantCodes {
+				if got[i].Code != wantCode {
+					t.Errorf("coupon[%d].Code = %q, want %q", i, got[i].Code, wantCode)
+				}
+				if tt.wantStore != "" && got[i].StoreName != tt.wantStore {
+					t.Errorf("coupon[%d].StoreName = %q, want %q", i, got[i].StoreName, tt.wantStore)
+				}
+			}
+		})
+	}
+}
+
+func TestIdentifyStoreFromText_SlugsAndNewDomains(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		text      string
+		wantStore string
+		wantURL   string
+	}{
+		{
+			name:      "aoferta slug Kabum",
+			text:      "SSD 1TB NVMe em promoção https://aoferta.net/003wMFHz-Kabum",
+			wantStore: "Kabum",
+			wantURL:   "https://aoferta.net/003wMFHz-Kabum",
+		},
+		{
+			name:      "aoferta slug Terabyte",
+			text:      "Fonte 650W em promoção https://aoferta.net/0033iDdD-Terabyte",
+			wantStore: "Terabyte",
+			wantURL:   "https://aoferta.net/0033iDdD-Terabyte",
+		},
+		{
+			name:      "aoferta slug MercadoLivre",
+			text:      "Oferta relâmpago https://aoferta.net/abc123-MercadoLivre",
+			wantStore: "Mercado Livre",
+			wantURL:   "https://aoferta.net/abc123-MercadoLivre",
+		},
+		{
+			name:      "link.amazon shortener",
+			text:      "Celular S25 FE https://link.amazon/B044hqQnP",
+			wantStore: "Amazon",
+			wantURL:   "https://link.amazon/B044hqQnP",
+		},
+		{
+			name:      "a.aliexpress.com shortener",
+			text:      "Monitor Arzopa https://a.aliexpress.com/_c37MYOll",
+			wantStore: "AliExpress",
+			wantURL:   "https://a.aliexpress.com/_c37MYOll",
+		},
+		{
+			name:      "Centauro keyword",
+			text:      "Cupom Centauro Tênis Running https://promo.xetlinks.com/xyz",
+			wantStore: "Centauro",
+			wantURL:   "https://promo.xetlinks.com/xyz",
+		},
+		{
+			name:      "Dafiti domain",
+			text:      "Moda em oferta https://www.dafiti.com.br/look",
+			wantStore: "Dafiti",
+			wantURL:   "https://www.dafiti.com.br/look",
+		},
+		{
+			name:      "Nike domain",
+			text:      "Tênis Air Max https://www.nike.com.br/air-max",
+			wantStore: "Nike",
+			wantURL:   "https://www.nike.com.br/air-max",
+		},
+		{
+			name:      "Carrefour keyword",
+			text:      "Oferta Carrefour Smart TV https://promo.xetlinks.com/tv",
+			wantStore: "Carrefour",
+			wantURL:   "https://promo.xetlinks.com/tv",
+		},
+		{
+			name:      "keyword boundary prevents false meli inside melissa",
+			text:      "Sandália Melissa em oferta https://lojanova.example/melissa",
+			wantStore: "Oferta",
+			wantURL:   "https://lojanova.example/melissa",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			gotStore, gotURL := domain.IdentifyStoreFromText(tt.text)
+			if gotStore != tt.wantStore || gotURL != tt.wantURL {
+				t.Errorf("IdentifyStoreFromText(%q) = (%q, %q), want (%q, %q)",
+					tt.text, gotStore, gotURL, tt.wantStore, tt.wantURL)
+			}
+		})
+	}
+}
+
+func BenchmarkExtractCoupons(b *testing.B) {
+	msg := "🏷️ Use cupom: HB3001 + AEMEGA12 ou AEMEGA6 + Moedas no App\nhttps://a.aliexpress.com/_c2RtOLvh"
+	entities := []domain.TelegramEntityExcerpt{
+		{Type: "code", Text: "HB3001"},
+		{Type: "code", Text: "AEMEGA12"},
+		{Type: "code", Text: "AEMEGA6"},
+	}
+
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = domain.ExtractCouponsWithEntities(msg, entities)
+	}
+}

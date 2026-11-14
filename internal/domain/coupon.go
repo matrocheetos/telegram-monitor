@@ -8,12 +8,11 @@ import (
 
 var (
 	urlRegex             = regexp.MustCompile(`https?://[^\s<>"'\)]+`)
-	colonPatternRegex    = regexp.MustCompile(`:\s*([A-Za-z0-9_-]{3,30})`)
-	keywordPatternRegex  = regexp.MustCompile(`(?i)(?:cupom|c[oó]digo)\s+(?:[eé]\s+)?([A-Za-z0-9_-]{3,30})(?:[ \t\r\n]|$)`)
-	timestampCheckRegex  = regexp.MustCompile(`^[0-9]{2}$`)
+	keywordCueRegex      = regexp.MustCompile(`(?i)\b(?:cupom|cupons|c[oó]digo)\b(?:\s+(?:o|a|[eé]))?`)
 	installmentCodeRegex = regexp.MustCompile(`^[0-9]{1,2}X$`)
 	voltageCodeRegex     = regexp.MustCompile(`^[0-9]{2,3}V$`)
-	couponStopWords      = map[string]struct{}{
+
+	couponStopWords = map[string]struct{}{
 		"HTTP": {}, "HTTPS": {}, "COM": {}, "BR": {}, "LINK": {}, "LOJA": {},
 		"VEJA": {}, "CONFIRA": {}, "CLIQUE": {}, "AQUI": {}, "VALOR": {}, "PRECO": {},
 		"FRETE": {}, "GRATIS": {}, "PARCELADO": {}, "AVISTA": {}, "DESCONTO": {},
@@ -27,12 +26,20 @@ var (
 		"ROSA": {}, "DOURADO": {}, "PRATA": {}, "NOVO": {}, "USADO": {}, "LACRADO": {},
 		"ORIGINAL": {}, "OFICIAL": {}, "NACIONAL": {}, "INTERNACIONAL": {}, "TODOS": {},
 		"TODAS": {}, "SELECIONADOS": {}, "UNIDADES": {}, "ESTOQUE": {}, "GARANTIA": {},
-		"BIVOLT": {}, "CUPOM": {}, "CUPONS": {}, "CODIGO": {}, "OFF": {},
+		"BIVOLT": {}, "CUPOM": {}, "CUPONS": {}, "CODIGO": {}, "CODIGOS": {}, "OFF": {},
+		"FORTE": {}, "MERCADO": {}, "LIVRE": {}, "ABAIXO": {}, "ACIMA": {}, "ERRO": {},
+		"AGORA": {}, "MEGA": {}, "SUPER": {}, "VIP": {}, "MOEDAS": {}, "MOEDA": {},
+		"SELECIONE": {}, "CARRINHO": {}, "APLICAR": {}, "APLIQUE": {}, "RESGATE": {},
+		"GANHE": {}, "USE": {}, "TECNOLOGIA": {}, "ANUNCIO": {}, "PAGINA": {},
+		"OFERTA": {}, "OFERTAS": {}, "APROVEITE": {}, "APROVEITEM": {}, "GARANTA": {},
+		"FINALIZE": {}, "PRODUTO": {}, "PRODUTOS": {},
 	}
+
 	couponLineCues = map[string]struct{}{
 		"cupom": {}, "cupons": {}, "codigo": {}, "cod": {}, "off": {},
 		"desconto": {}, "use": {}, "aplique": {}, "vale": {}, "voucher": {},
 	}
+
 	nonCouponMetadataLabels = map[string]struct{}{
 		"validade": {}, "parcela": {}, "parcelas": {}, "cor": {}, "tamanho": {},
 		"modelo": {}, "voltagem": {}, "condicao": {}, "vendido": {}, "entregue": {},
@@ -41,6 +48,25 @@ var (
 		"de": {}, "por": {}, "ate": {}, "obs": {}, "nota": {}, "aviso": {},
 		"regras": {}, "status": {}, "estoque": {}, "garantia": {}, "marca": {},
 		"categoria": {},
+	}
+
+	aggregatorStoreSlugs = map[string]string{
+		"kabum":         "Kabum",
+		"terabyte":      "Terabyte",
+		"terabyteshop":  "Terabyte",
+		"amazon":        "Amazon",
+		"magalu":        "Magalu",
+		"magazineluiza": "Magalu",
+		"mercadolivre":  "Mercado Livre",
+		"meli":          "Mercado Livre",
+		"shopee":        "Shopee",
+		"aliexpress":    "AliExpress",
+		"pichau":        "Pichau",
+		"netshoes":      "Netshoes",
+		"centauro":      "Centauro",
+		"dafiti":        "Dafiti",
+		"nike":          "Nike",
+		"carrefour":     "Carrefour",
 	}
 )
 
@@ -55,7 +81,7 @@ var specificStores = []storeDefinition{
 	{
 		name:        "Amazon",
 		fallbackURL: "https://www.amazon.com.br",
-		domains:     []string{"amzn.to", "amazon.com.br", "amazon.com"},
+		domains:     []string{"amzn.to", "link.amazon", "amazon.com.br", "amazon.com"},
 		keywords:    []string{"amazon"},
 	},
 	{
@@ -79,7 +105,7 @@ var specificStores = []storeDefinition{
 	{
 		name:        "AliExpress",
 		fallbackURL: "https://pt.aliexpress.com",
-		domains:     []string{"aliexpress.com", "s.click.aliexpress.com"},
+		domains:     []string{"a.aliexpress.com", "s.click.aliexpress.com", "aliexpress.com"},
 		keywords:    []string{"aliexpress", "ali express"},
 	},
 	{
@@ -99,6 +125,36 @@ var specificStores = []storeDefinition{
 		fallbackURL: "https://www.pichau.com.br",
 		domains:     []string{"pichau.com.br"},
 		keywords:    []string{"pichau"},
+	},
+	{
+		name:        "Netshoes",
+		fallbackURL: "https://www.netshoes.com.br",
+		domains:     []string{"netshoes.com.br"},
+		keywords:    []string{"netshoes"},
+	},
+	{
+		name:        "Centauro",
+		fallbackURL: "https://www.centauro.com.br",
+		domains:     []string{"centauro.com.br"},
+		keywords:    []string{"centauro"},
+	},
+	{
+		name:        "Dafiti",
+		fallbackURL: "https://www.dafiti.com.br",
+		domains:     []string{"dafiti.com.br"},
+		keywords:    []string{"dafiti"},
+	},
+	{
+		name:        "Nike",
+		fallbackURL: "https://www.nike.com.br",
+		domains:     []string{"nike.com.br"},
+		keywords:    []string{"nike"},
+	},
+	{
+		name:        "Carrefour",
+		fallbackURL: "https://www.carrefour.com.br",
+		domains:     []string{"carrefour.com.br"},
+		keywords:    []string{"carrefour"},
 	},
 }
 
@@ -175,10 +231,55 @@ func matchStoreByURL(stores []storeDefinition, foundURLs []string) (string, stri
 	return "", "", false
 }
 
+func matchStoreByAggregatorSlug(foundURLs []string) (string, string, bool) {
+	for _, u := range foundURLs {
+		if u == "" {
+			continue
+		}
+		lowerURL := strings.ToLower(u)
+		idx := strings.Index(lowerURL, "aoferta.net/")
+		if idx < 0 {
+			continue
+		}
+		pathPart := lowerURL[idx+len("aoferta.net/"):]
+		if qIdx := strings.IndexAny(pathPart, "?#"); qIdx >= 0 {
+			pathPart = pathPart[:qIdx]
+		}
+		pathPart = strings.TrimRight(pathPart, "/")
+		dashIdx := strings.LastIndexByte(pathPart, '-')
+		if dashIdx < 0 || dashIdx+1 >= len(pathPart) {
+			continue
+		}
+		slug := pathPart[dashIdx+1:]
+		if storeName, ok := aggregatorStoreSlugs[slug]; ok {
+			return storeName, u, true
+		}
+	}
+	return "", "", false
+}
+
+func isKeywordInText(lowerText, kw string) bool {
+	start := 0
+	for {
+		idx := strings.Index(lowerText[start:], kw)
+		if idx < 0 {
+			return false
+		}
+		pos := start + idx
+		end := pos + len(kw)
+		leftOK := pos == 0 || !isASCIIAlphaNum(lowerText[pos-1])
+		rightOK := end == len(lowerText) || !isASCIIAlphaNum(lowerText[end])
+		if leftOK && rightOK {
+			return true
+		}
+		start = pos + 1
+	}
+}
+
 func matchStoreByKeyword(stores []storeDefinition, lowerText string, foundURLs []string) (string, string, bool) {
 	for _, store := range stores {
 		for _, kw := range store.keywords {
-			if strings.Contains(lowerText, kw) {
+			if isKeywordInText(lowerText, kw) {
 				if len(foundURLs) > 0 && foundURLs[0] != "" {
 					return store.name, foundURLs[0], true
 				}
@@ -191,6 +292,10 @@ func matchStoreByKeyword(stores []storeDefinition, lowerText string, foundURLs [
 
 func identifyStore(text string, foundURLs []string) (string, string) {
 	if name, url, ok := matchStoreByURL(specificStores, foundURLs); ok {
+		return name, url
+	}
+
+	if name, url, ok := matchStoreByAggregatorSlug(foundURLs); ok {
 		return name, url
 	}
 
@@ -213,9 +318,8 @@ func identifyStore(text string, foundURLs []string) (string, string) {
 	return "Oferta", ""
 }
 
-func isValidColonContext(text string, colonIdx int) bool {
-	lineStart := strings.LastIndexAny(text[:colonIdx], "\r\n") + 1
-	linePrefix := text[lineStart:colonIdx]
+func isValidColonContext(line string, colonIdx int) bool {
+	linePrefix := line[:colonIdx]
 
 	// Ignore port or path colons inside URLs (e.g. https://example.com:8080).
 	tokenStart := strings.LastIndexAny(linePrefix, " \t") + 1
@@ -245,23 +349,142 @@ func isValidColonContext(text string, colonIdx int) bool {
 	return false
 }
 
-func isValidCouponCandidate(upper string) bool {
-	if len(upper) < 3 || len(upper) > 30 {
-		return false
-	}
-	if timestampCheckRegex.MatchString(upper) || installmentCodeRegex.MatchString(upper) || voltageCodeRegex.MatchString(upper) {
-		return false
-	}
-	if _, isStopWord := couponStopWords[upper]; isStopWord {
-		return false
-	}
-	if strings.HasPrefix(upper, "HTTP") || strings.HasPrefix(upper, "//") {
-		return false
-	}
-	return true
+func isCouponTokenRune(r rune) bool {
+	return (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' || r == '-'
 }
 
-func ExtractCoupons(messageText string) []Coupon {
+func cleanCouponToken(raw string) string {
+	return strings.TrimFunc(raw, func(r rune) bool {
+		return !isCouponTokenRune(r)
+	})
+}
+
+func normalizeLikelyCouponToken(raw string, fromCodeEntity bool) (string, bool) {
+	cleaned := cleanCouponToken(raw)
+	if len(cleaned) < 4 || len(cleaned) > 30 {
+		return "", false
+	}
+
+	hasLetter := false
+	hasDigitChar := false
+	hasUpper := false
+	hasLower := false
+
+	for i := 0; i < len(cleaned); i++ {
+		b := cleaned[i]
+		switch {
+		case b >= 'A' && b <= 'Z':
+			hasLetter = true
+			hasUpper = true
+		case b >= 'a' && b <= 'z':
+			hasLetter = true
+			hasLower = true
+		case b >= '0' && b <= '9':
+			hasDigitChar = true
+		case b == '_' || b == '-':
+		default:
+			return "", false
+		}
+	}
+
+	if !hasLetter {
+		return "", false
+	}
+
+	upper := strings.ToUpper(cleaned)
+	if strings.HasPrefix(upper, "HTTP") || strings.HasPrefix(upper, "WWW") {
+		return "", false
+	}
+	if installmentCodeRegex.MatchString(upper) || voltageCodeRegex.MatchString(upper) {
+		return "", false
+	}
+	if _, isStopWord := couponStopWords[upper]; isStopWord {
+		return "", false
+	}
+
+	if !fromCodeEntity {
+		allUpper := !hasLower && hasUpper
+		mixedWithDigit := hasDigitChar && hasUpper
+		if !allUpper && !mixedWithDigit {
+			return "", false
+		}
+	}
+
+	return upper, true
+}
+
+func scanCouponChain(tail string) []string {
+	var results []string
+	n := len(tail)
+	i := 0
+	expectCode := true
+
+	for i < n {
+		for i < n && (tail[i] == ' ' || tail[i] == '\t') {
+			i++
+		}
+		if i >= n {
+			break
+		}
+
+		if tail[i] == '(' || tail[i] == '[' || tail[i] == ';' || tail[i] == '|' {
+			break
+		}
+
+		if tail[i] == '+' || tail[i] == '/' || tail[i] == ',' || tail[i] == '&' {
+			if expectCode && len(results) > 0 {
+				break
+			}
+			expectCode = true
+			i++
+			continue
+		}
+
+		start := i
+		for i < n && tail[i] != ' ' && tail[i] != '\t' &&
+			tail[i] != '+' && tail[i] != '/' && tail[i] != ',' && tail[i] != '&' {
+			i++
+		}
+		segment := tail[start:i]
+		lowerSeg := strings.ToLower(segment)
+		if strings.HasPrefix(lowerSeg, "http://") || strings.HasPrefix(lowerSeg, "https://") {
+			break
+		}
+
+		if lowerSeg == "ou" || lowerSeg == "e" {
+			if len(results) == 0 || expectCode {
+				break
+			}
+			expectCode = true
+			continue
+		}
+
+		if expectCode {
+			cleaned := cleanCouponToken(segment)
+			if cleaned == "" {
+				// Skip pure emoji/punctuation decorations without breaking the chain.
+				continue
+			}
+			code, ok := normalizeLikelyCouponToken(segment, false)
+			if !ok {
+				break
+			}
+			results = append(results, code)
+			expectCode = false
+			continue
+		}
+
+		// When expecting a connector, only skip trailing emojis attached as a separate token.
+		if cleanCouponToken(segment) == "" {
+			continue
+		}
+		break
+	}
+
+	return results
+}
+
+func ExtractCouponsWithEntities(messageText string, entities []TelegramEntityExcerpt) []Coupon {
 	if !HasCouponIndicator(messageText) {
 		return []Coupon{}
 	}
@@ -272,29 +495,47 @@ func ExtractCoupons(messageText string) []Coupon {
 	extractedSet := make(map[string]struct{})
 	extractedCodes := make([]string, 0, 4)
 
-	addCode := func(raw string) {
-		code := strings.Trim(raw, " \t\r\n.,;:!?'\"")
-		upper := strings.ToUpper(code)
-		if !isValidCouponCandidate(upper) {
-			return
-		}
+	addNormalizedCode := func(upper string) {
 		if _, exists := extractedSet[upper]; !exists {
 			extractedSet[upper] = struct{}{}
 			extractedCodes = append(extractedCodes, upper)
 		}
 	}
 
-	colonMatches := colonPatternRegex.FindAllStringSubmatchIndex(messageText, -1)
-	for _, match := range colonMatches {
-		if len(match) >= 4 && isValidColonContext(messageText, match[0]) {
-			addCode(messageText[match[2]:match[3]])
+	for _, ent := range entities {
+		if ent.Type != "code" {
+			continue
+		}
+		rawCode := strings.TrimSpace(ent.Text)
+		if rawCode == "" {
+			if s, e, ok := utf16SpanToByteSpan(messageText, ent.Offset, ent.Length); ok {
+				rawCode = strings.TrimSpace(messageText[s:e])
+			}
+		}
+		if rawCode == "" || strings.ContainsAny(rawCode, " \t\r\n") {
+			continue
+		}
+		if upper, ok := normalizeLikelyCouponToken(rawCode, true); ok {
+			addNormalizedCode(upper)
 		}
 	}
 
-	keywordMatches := keywordPatternRegex.FindAllStringSubmatch(messageText, -1)
-	for _, match := range keywordMatches {
-		if len(match) > 1 {
-			addCode(match[1])
+	lines := strings.Split(messageText, "\n")
+	for _, line := range lines {
+		line = strings.TrimRight(line, "\r")
+		for idx := 0; idx < len(line); idx++ {
+			if line[idx] == ':' && isValidColonContext(line, idx) {
+				for _, code := range scanCouponChain(line[idx+1:]) {
+					addNormalizedCode(code)
+				}
+			}
+		}
+
+		kwMatches := keywordCueRegex.FindAllStringIndex(line, -1)
+		for _, m := range kwMatches {
+			for _, code := range scanCouponChain(line[m[1]:]) {
+				addNormalizedCode(code)
+			}
 		}
 	}
 
@@ -310,4 +551,8 @@ func ExtractCoupons(messageText string) []Coupon {
 	}
 
 	return coupons
+}
+
+func ExtractCoupons(messageText string) []Coupon {
+	return ExtractCouponsWithEntities(messageText, nil)
 }
